@@ -1,6 +1,6 @@
 const BaseRepository = require('./baseRepository');
 const Survey = require('../models/survey');
-
+const mongoose = require('mongoose');
 class SurveyRepository extends BaseRepository {
   constructor() {
     super(Survey);
@@ -11,9 +11,7 @@ class SurveyRepository extends BaseRepository {
       .findById(id)
       .populate({
         path: 'questions',
-        populate: {
-          path: 'responseValues'
-        }
+        options: { sort: { order: 1 } }
       });
   }
 
@@ -22,9 +20,7 @@ class SurveyRepository extends BaseRepository {
       .find(filter)
       .populate({
         path: 'questions',
-        populate: {
-          path: 'responseValues'
-        }
+        options: { sort: { order: 1 } }
       });
   }
 }

@@ -1,5 +1,5 @@
-const User = require('../models/user');
 const BaseRepository = require('./baseRepository');
+const User = require('../models/user');
 
 class UserRepository extends BaseRepository {
   constructor() {
@@ -7,8 +7,12 @@ class UserRepository extends BaseRepository {
   }
 
   async findByUsername(username) {
-    return await this.model.findOne({ username });
+    return await this.model.findOne({ username }).select('+password');
+  }
+
+  async findByEmail(email) {
+    return await this.model.findOne({ email }).select('+password');
   }
 }
 
-module.exports = UserRepository;
+module.exports = UserRepository

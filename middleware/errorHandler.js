@@ -4,9 +4,7 @@ const errorHandler = (err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
 
-  if (keys.nodeEnv === 'development') {
-    console.error(err);
-  }
+  console.error(err);
 
   if (err.name === 'CastError') {
     error = new CustomError('Resource not found', 404);
@@ -23,8 +21,7 @@ const errorHandler = (err, req, res, next) => {
 
   res.status(error.statusCode || 500).json({
     success: false,
-    error: error.message || 'Server Error',
-    ...(keys.nodeEnv === 'development' && { stack: err.stack })
+    error: error.message || 'Server Error'
   });
 };
 

@@ -9,8 +9,7 @@ class QuestionRepository extends BaseRepository {
   async findBySurveyId(surveyId) {
     return await this.model
       .find({ surveyId })
-      .sort('order')
-      .populate('responseValues');
+      .sort('order');
   }
 
   async getMaxOrder(surveyId) {
@@ -19,6 +18,17 @@ class QuestionRepository extends BaseRepository {
       .sort('-order')
       .select('order');
     return result ? result.order : 0;
+  }
+
+  async reorderQuestions(surveyId, questionOrder) {
+    const bulkOps = questionOrder.map((questionId, index) => ({
+      updateOne: {
+        filter: { _id: questionId, surveyId },
+        update: { $set: { order: index } }
+      }
+    }));
+
+    return await this.model.bulkWrite(bulkOps);
   }
 }
 

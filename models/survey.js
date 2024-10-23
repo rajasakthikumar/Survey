@@ -4,10 +4,10 @@ const { baseModelOptions, baseSchemaFields } = require('./baseModel');
 const SurveySchema = new mongoose.Schema({
   title: {
     type: String,
-    required: true,
+    required: [true, 'Please add a title'],
     unique: true,
     trim: true,
-    maxlength: 500
+    maxlength: [500, 'Title cannot exceed 500 characters']
   },
   description: {
     type: String,

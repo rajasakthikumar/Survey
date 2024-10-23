@@ -1,5 +1,6 @@
 const BaseRepository = require('./baseRepository');
 const SurveyProgress = require('../models/surveyProgress');
+const mongoose = require('mongoose');
 
 class SurveyProgressRepository extends BaseRepository {
   constructor() {

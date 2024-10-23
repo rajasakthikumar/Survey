@@ -2,7 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { questionController } = require('../bootstrap');
 const auth = require('../middleware/auth');
-const { validateQuestion } = require('../middleware/validation');
+const { 
+  validateQuestion, 
+  validateQuestionUpdate 
+} = require('../middleware/validation');
 const checkOwnership = require('../middleware/checkOwnership');
 
 router.use(auth);
@@ -12,9 +15,12 @@ router.route('/')
 
 router.route('/:id')
   .get(questionController.getById)
-  .put(checkOwnership('Question'), validateQuestion, questionController.updateQuestion)
+  .put(checkOwnership('Question'), validateQuestionUpdate, questionController.updateQuestion)
   .delete(checkOwnership('Question'), questionController.delete);
 
-router.put('/:id/move', checkOwnership('Question'), questionController.moveQuestion);
+router.put('/:id/move', 
+  checkOwnership('Question'), 
+  questionController.moveQuestion
+);
 
 module.exports = router;

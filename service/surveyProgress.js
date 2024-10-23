@@ -1,15 +1,22 @@
+// services/surveyProgress.js
 const BaseService = require('./baseService');
 const CustomError = require('../utils/customError');
 
 class SurveyProgressService extends BaseService {
-  constructor(surveyProgressRepository, surveyService) {
+  constructor(surveyProgressRepository, surveyService, questionService) {
     super(surveyProgressRepository);
     this.surveyService = surveyService;
+    this.questionService = questionService;
   }
 
   async initializeProgress(surveyId, respondentId) {
-    await this.surveyService.findById(surveyId);
+    // Verify survey exists
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
 
+    // Check for existing progress
     let progress = await this.repository.findBySurveyAndRespondent(
       surveyId,
       respondentId
@@ -29,35 +36,44 @@ class SurveyProgressService extends BaseService {
   }
 
   async updateProgress(surveyId, respondentId, questionId) {
-    const survey = await this.surveyService.getSurveyById(surveyId);
+    // Verify survey exists
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
+    // Verify question exists and belongs to the survey
+    const question = await this.questionService.findById(questionId);
+    if (!question || question.surveyId.toString() !== surveyId) {
+      throw new CustomError('Question not found in this survey', 404);
+    }
+
+    // Get existing progress
     const progress = await this.repository.findBySurveyAndRespondent(
       surveyId,
       respondentId
     );
 
     if (!progress) {
-      throw new CustomError('Survey progress not found', 404);
+      throw new CustomError('Survey progress not found, please initialize first', 404);
     }
 
     // Update progress status
     if (progress.status === 'NOT_STARTED') {
       progress.status = 'IN_PROGRESS';
-      progress.startedAt = new Date();
     }
 
-    // Update answered questions
+    // Add question to answered questions if not already present
     if (!progress.answeredQuestions.includes(questionId)) {
       progress.answeredQuestions.push(questionId);
     }
 
     // Calculate progress percentage
     progress.progress = (progress.answeredQuestions.length / survey.questions.length) * 100;
-    progress.lastAnsweredAt = new Date();
 
     // Check if survey is completed
     if (progress.progress === 100) {
       progress.status = 'COMPLETED';
-      progress.completedAt = new Date();
     }
 
     await progress.save();
@@ -65,18 +81,55 @@ class SurveyProgressService extends BaseService {
   }
 
   async getProgress(surveyId, respondentId) {
+    // Verify survey exists
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
     const progress = await this.repository.findBySurveyAndRespondent(
       surveyId,
       respondentId
     );
+
     if (!progress) {
       throw new CustomError('Survey progress not found', 404);
     }
+
     return progress;
   }
 
-  async getSurveyParticipants(surveyId) {
+  async getSurveyParticipants(surveyId, requesterId) {
+    // Verify survey exists and requester has permission
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
+    // Only survey creator or admin can view participants
+    if (survey.createdBy.toString() !== requesterId && requesterId.role !== 'admin') {
+      throw new CustomError('Not authorized to view participants', 403);
+    }
+
     return await this.repository.findBySurveyWithRespondents(surveyId);
+  }
+
+  async getCompletionStats(surveyId, requesterId) {
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
+    // Only survey creator or admin can view stats
+    if (survey.createdBy.toString() !== requesterId && requesterId.role !== 'admin') {
+      throw new CustomError('Not authorized to view statistics', 403);
+    }
+
+    return await this.repository.getCompletionStats(surveyId);
+  }
+
+  async getRespondentProgress(respondentId) {
+    return await this.repository.getRespondentProgress(respondentId);
   }
 }
 

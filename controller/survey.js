@@ -8,7 +8,6 @@ class SurveyController extends BaseController {
   }
 
   getAllSurveys = asyncHandler(async (req, res) => {
-    // Handle archived filter
     if (req.query.includeArchived !== 'true') {
       req.query.isArchived = false;
     }
@@ -27,17 +26,26 @@ class SurveyController extends BaseController {
   });
 
   duplicateSurvey = asyncHandler(async (req, res) => {
-    const survey = await this.service.duplicateSurvey(req.params.id, req.user.id);
+    const survey = await this.service.duplicateSurvey(
+      req.params.id,
+      req.user.id
+    );
     res.status(201).json(formatResponse(survey));
   });
 
   archiveSurvey = asyncHandler(async (req, res) => {
-    const survey = await this.service.archiveSurvey(req.params.id, req.user.id);
+    const survey = await this.service.archiveSurvey(
+      req.params.id,
+      req.user.id
+    );
     res.status(200).json(formatResponse(survey));
   });
 
   unarchiveSurvey = asyncHandler(async (req, res) => {
-    const survey = await this.service.unarchiveSurvey(req.params.id, req.user.id);
+    const survey = await this.service.unarchiveSurvey(
+      req.params.id,
+      req.user.id
+    );
     res.status(200).json(formatResponse(survey));
   });
 

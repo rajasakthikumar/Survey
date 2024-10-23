@@ -33,10 +33,6 @@ class BaseRepository {
       );
     }
   
-    async updateMany(filter, data) {
-      return await this.model.updateMany(filter, data, { runValidators: true });
-    }
-  
     async deleteById(id) {
       return await this.model.findByIdAndDelete(id);
     }
