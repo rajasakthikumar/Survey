@@ -1,0 +1,2289 @@
+File: bootstrap.js
+----------------------------------------
+// bootstrap.js
+
+const SurveyRepository = require('./repositories/survey');
+const QuestionRepository = require('./repositories/question');
+const ResponseValueRepository = require('./repositories/responseValue');
+const AnswerRepository = require('./repositories/answer');
+const UserRepository = require('./repositories/user');
+
+const SurveyService = require('./service/survey');
+const QuestionService = require('./service/question');
+const ResponseValueService = require('./service/responseValue');
+const AnswerService = require('./service/answer');
+const UserService = require('./service/user');
+
+const SurveyController = require('./controller/survey');
+const QuestionController = require('./controller/question');
+const ResponseValueController = require('./controller/responseValue');
+const AnswerController = require('./controller/answer');
+const UserController = require('./controller/user');
+
+const surveyRepository = new SurveyRepository();
+const questionRepository = new QuestionRepository();
+const responseValueRepository = new ResponseValueRepository();
+const answerRepository = new AnswerRepository();
+const userRepository = new UserRepository();
+
+const responseValueService = new ResponseValueService(responseValueRepository);
+const surveyService = new SurveyService(
+  surveyRepository,
+  null, 
+  responseValueService
+);
+const questionService = new QuestionService(
+  questionRepository,
+  responseValueService,
+  surveyService
+);
+surveyService.questionService = questionService; // Inject questionService after initialization
+
+const answerService = new AnswerService(answerRepository);
+const userService = new UserService(userRepository);
+
+const surveyController = new SurveyController(surveyService);
+const questionController = new QuestionController(questionService);
+const responseValueController = new ResponseValueController(responseValueService);
+const answerController = new AnswerController(answerService);
+const userController = new UserController(userService);
+
+module.exports = {
+  surveyController,
+  questionController,
+  responseValueController,
+  answerController,
+  userController,
+};
+
+
+File: config\keys.js
+----------------------------------------
+const jwtSecret = process.env.JWT_SECRET || 'secret';
+const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/survey';
+
+module.exports = {
+  jwtSecret,
+  mongoURI,
+};
+
+
+File: controller\answer.js
+----------------------------------------
+const BaseController = require('./baseController');
+const asyncHandler = require('../middleware/asyncHandler');
+const formatResponse = require('../util/formatResponse');
+
+class AnswerController extends BaseController {
+  constructor(answerService) {
+    super(answerService);
+  }
+
+  submitAnswer = asyncHandler(async (req, res) => {
+    const answer = await this.service.createAnswer({
+      ...req.body,
+      questionId: req.params.questionId,
+      respondentId: req.user.id,
+      createdBy: req.user.id
+    });
+    res.status(201).json(formatResponse(answer));
+  });
+
+  getAnswersBySurvey = asyncHandler(async (req, res) => {
+    const answers = await this.service.getAnswersBySurvey(req.params.surveyId);
+    res.status(200).json(formatResponse(answers));
+  });
+
+  getAnswersByQuestion = asyncHandler(async (req, res) => {
+    const answers = await this.service.getAnswersByQuestion(req.params.questionId);
+    res.status(200).json(formatResponse(answers));
+  });
+
+  getMyAnswers = asyncHandler(async (req, res) => {
+    const answers = await this.service.getRespondentAnswers(
+      req.params.surveyId,
+      req.user.id
+    );
+    res.status(200).json(formatResponse(answers));
+  });
+}
+
+module.exports = AnswerController;
+
+File: controller\baseController.js
+----------------------------------------
+const asyncHandler = require('../middleware/asyncHandler');
+const formatResponse = require('../util/formatResponse');
+
+class BaseController {
+  constructor(service) {
+    this.service = service;
+  }
+
+  getAll = asyncHandler(async (req, res) => {
+    const items = await this.service.findAll(req.query);
+    res.status(200).json(formatResponse(items));
+  });
+
+  getById = asyncHandler(async (req, res) => {
+    const item = await this.service.findById(req.params.id);
+    res.status(200).json(formatResponse(item));
+  });
+
+  create = asyncHandler(async (req, res) => {
+    const item = await this.service.create({
+      ...req.body,
+      createdBy: req.user.id
+    });
+    res.status(201).json(formatResponse(item));
+  });
+
+  update = asyncHandler(async (req, res) => {
+    const item = await this.service.updateById(req.params.id, {
+      ...req.body,
+      modifiedBy: req.user.id
+    });
+    res.status(200).json(formatResponse(item));
+  });
+
+  delete = asyncHandler(async (req, res) => {
+    await this.service.deleteById(req.params.id);
+    res.status(200).json(formatResponse({ message: 'Resource deleted successfully' }));
+  });
+}
+
+module.exports = BaseController;
+
+File: controller\question.js
+----------------------------------------
+const BaseController = require('./baseController');
+const asyncHandler = require('../middleware/asyncHandler');
+const formatResponse = require('../util/formatResponse');
+
+class QuestionController extends BaseController {
+  constructor(questionService) {
+    super(questionService);
+  }
+
+  createQuestion = asyncHandler(async (req, res) => {
+    const question = await this.service.createQuestion({
+      ...req.body,
+      surveyId: req.params.surveyId,
+      createdBy: req.user.id
+    });
+    res.status(201).json(formatResponse(question));
+  });
+
+  updateQuestion = asyncHandler(async (req, res) => {
+    const question = await this.service.updateQuestion(req.params.id, {
+      ...req.body,
+      modifiedBy: req.user.id
+    });
+    res.status(200).json(formatResponse(question));
+  });
+
+  moveQuestion = asyncHandler(async (req, res) => {
+    const { direction } = req.body;
+    const question = await this.service.moveQuestion(
+      req.params.surveyId,
+      req.params.id,
+      direction
+    );
+    res.status(200).json(formatResponse(question));
+  });
+}
+
+module.exports = QuestionController;
+
+File: controller\responseValue.js
+----------------------------------------
+const asyncHandler = require('../middleware/asyncHandler');
+const formatResponse = require('../util/formatResponse');
+
+class ResponseValueController {
+  constructor(responseValueService) {
+    this.responseValueService = responseValueService;
+  }
+
+  createResponseValue = asyncHandler(async (req, res, next) => {
+    const data = {
+      ...req.body,
+      questionId: req.params.questionId,
+      createdBy: req.user.id,
+    };
+
+    const responseValue = await this.responseValueService.createResponseValue(data);
+
+    res.status(201).json(formatResponse(responseValue));
+  });
+
+  getResponseValueById = asyncHandler(async (req, res, next) => {
+    const responseValue = await this.responseValueService.getResponseValueById(req.params.id);
+
+    res.status(200).json(formatResponse(responseValue));
+  });
+
+  updateResponseValueById = asyncHandler(async (req, res, next) => {
+    const data = {
+      ...req.body,
+      modifiedBy: req.user.id,
+    };
+
+    const responseValue = await this.responseValueService.updateResponseValue(req.params.id, data);
+
+    res.status(200).json(formatResponse(responseValue));
+  });
+
+  deleteResponseValueById = asyncHandler(async (req, res, next) => {
+    await this.responseValueService.deleteResponseValue(req.params.id);
+
+    res.status(200).json(formatResponse({ message: 'Response value deleted successfully' }));
+  });
+}
+
+module.exports = ResponseValueController;
+
+
+File: controller\survey.js
+----------------------------------------
+const BaseController = require('./baseController');
+const asyncHandler = require('../middleware/asyncHandler');
+const formatResponse = require('../util/formatResponse');
+
+class SurveyController extends BaseController {
+  constructor(surveyService) {
+    super(surveyService);
+  }
+
+  getAllSurveys = asyncHandler(async (req, res) => {
+    // Handle archived filter
+    if (req.query.includeArchived !== 'true') {
+      req.query.isArchived = false;
+    }
+    delete req.query.includeArchived;
+
+    const surveys = await this.service.getAllSurveys(req.query);
+    res.status(200).json(formatResponse(surveys));
+  });
+
+  createSurvey = asyncHandler(async (req, res) => {
+    const survey = await this.service.createSurvey({
+      ...req.body,
+      createdBy: req.user.id
+    });
+    res.status(201).json(formatResponse(survey));
+  });
+
+  duplicateSurvey = asyncHandler(async (req, res) => {
+    const survey = await this.service.duplicateSurvey(req.params.id, req.user.id);
+    res.status(201).json(formatResponse(survey));
+  });
+
+  archiveSurvey = asyncHandler(async (req, res) => {
+    const survey = await this.service.archiveSurvey(req.params.id, req.user.id);
+    res.status(200).json(formatResponse(survey));
+  });
+
+  unarchiveSurvey = asyncHandler(async (req, res) => {
+    const survey = await this.service.unarchiveSurvey(req.params.id, req.user.id);
+    res.status(200).json(formatResponse(survey));
+  });
+
+  reorderQuestions = asyncHandler(async (req, res) => {
+    const survey = await this.service.reorderQuestions(
+      req.params.id,
+      req.body.questionOrder
+    );
+    res.status(200).json(formatResponse(survey));
+  });
+}
+
+module.exports = SurveyController;
+
+File: controller\user.js
+----------------------------------------
+const asyncHandler = require('../middleware/asyncHandler');
+const formatResponse = require('../util/formatResponse');
+
+class UserController {
+  constructor(userService) {
+    this.userService = userService;
+  }
+
+  registerUser = asyncHandler(async (req, res, next) => {
+    const userData = req.body;
+    const { user, token } = await this.userService.registerUser(userData);
+
+    res.status(201).json(formatResponse({ user, token }));
+  });
+
+  loginUser = asyncHandler(async (req, res, next) => {
+    const userData = req.body;
+    const { user, token } = await this.userService.loginUser(userData);
+
+    res.status(200).json(formatResponse({ user, token }));
+  });
+
+  getCurrentUser = asyncHandler(async (req, res, next) => {
+    const user = await this.userService.getUserById(req.user.id);
+
+    res.status(200).json(formatResponse(user));
+  });
+}
+
+module.exports = UserController;
+
+
+File: docs\swagger.js
+----------------------------------------
+const swaggerJsdoc = require('swagger-jsdoc');
+
+const options = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'Survey API',
+      version: '1.0.0',
+      description: 'API documentation for Survey Application'
+    },
+    servers: [
+      {
+        url: 'http://localhost:5000/api',
+        description: 'Development server'
+      }
+    ],
+    security: [
+      {
+        bearerAuth: []
+      }
+    ]
+  },
+  apis: ['./routes/*.js']
+};
+
+module.exports = swaggerJsdoc(options);
+
+File: index.js
+----------------------------------------
+const express = require('express');
+const mongoose = require('mongoose');
+const keys = require('./config/keys');
+const authMiddleware = require('./middleware/auth');
+const errorHandler = require('./middleware/errorHandler');
+
+const app = express();
+
+app.use(express.json());
+
+mongoose
+  .connect(keys.mongoURI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log('DB connected'))
+  .catch((err) => console.log(err));
+
+const userRoutes = require('./routes/user');
+const surveyRoutes = require('./routes/survey');
+const questionRoutes = require('./routes/question');
+const answerRoutes = require('./routes/answer');
+
+app.use('/api/users', userRoutes);
+app.use('/api/surveys', authMiddleware, surveyRoutes);
+app.use('/api/questions', authMiddleware, questionRoutes);
+app.use('/api/answers', authMiddleware, answerRoutes);
+
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server started on ${PORT}`));
+
+
+File: logging\winston.js
+----------------------------------------
+const winston = require('winston');
+const config = require('../config/environment');
+
+const logger = winston.createLogger({
+  level: config.env === 'development' ? 'debug' : 'info',
+  format: winston.format.combine(
+    winston.format.timestamp({
+      format: 'YYYY-MM-DD HH:mm:ss'
+    }),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ 
+      filename: 'logs/error.log', 
+      level: 'error',
+      maxsize: 5242880, // 5MB
+      maxFiles: 5
+    }),
+    new winston.transports.File({ 
+      filename: 'logs/combined.log',
+      maxsize: 5242880,
+      maxFiles: 5
+    })
+  ]
+});
+
+if (config.env === 'development') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  }));
+}
+
+module.exports = logger;
+
+File: middleware\asyncHandler.js
+----------------------------------------
+const asyncHandler = fn => (req, res, next) =>
+    Promise.resolve(fn(req, res, next)).catch(next);
+  
+  module.exports = asyncHandler;
+  
+
+File: middleware\auth.js
+----------------------------------------
+const jwt = require('jsonwebtoken');
+const asyncHandler = require('./asyncHandler');
+const CustomError = require('../util/customError');
+const config = require('../config/environment');
+const User = require('../models/user');
+
+const protect = asyncHandler(async (req, res, next) => {
+  let token;
+
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (!token) {
+    throw new CustomError('Not authorized to access this route', 401);
+  }
+
+  try {
+    const decoded = jwt.verify(token, config.jwtSecret);
+    req.user = await User.findById(decoded.id).select('-password');
+    next();
+  } catch (err) {
+    throw new CustomError('Invalid token', 401);
+  }
+});
+
+const authorize = (...roles) => {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      throw new CustomError(
+        `User role ${req.user.role} is not authorized to access this route`,
+        403
+      );
+    }
+    next();
+  };
+};
+
+module.exports = { protect, authorize };
+
+File: middleware\cache.js
+----------------------------------------
+const redis = require('redis');
+const { promisify } = require('util');
+const config = require('../config/environment');
+
+const client = redis.createClient(config.redisUrl);
+const getAsync = promisify(client.get).bind(client);
+const setAsync = promisify(client.set).bind(client);
+
+const cache = (duration) => {
+  return async (req, res, next) => {
+    if (config.env === 'development') return next();
+
+    const key = `__express__${req.originalUrl}`;
+    const cachedResponse = await getAsync(key);
+
+    if (cachedResponse) {
+      return res.json(JSON.parse(cachedResponse));
+    }
+
+    res.originalJson = res.json;
+    res.json = async (body) => {
+      await setAsync(key, JSON.stringify(body), 'EX', duration);
+      res.originalJson(body);
+    };
+
+    next();
+  };
+};
+
+module.exports = cache;
+
+File: middleware\checkOwnership.js
+----------------------------------------
+const CustomError = require('../util/customError');
+
+const checkOwnership = (modelName) => async (req, res, next) => {
+  const Model = require(`../models/${modelName.toLowerCase()}`);
+  const resource = await Model.findById(req.params.id);
+
+  if (!resource) {
+    throw new CustomError(`${modelName} not found`, 404);
+  }
+
+  if (resource.createdBy.toString() !== req.user.id && req.user.role !== 'admin') {
+    throw new CustomError(`Not authorized to modify this ${modelName}`, 403);
+  }
+
+  req.resource = resource;
+  next();
+};
+
+module.exports = checkOwnership;
+
+File: middleware\errorHandler.js
+----------------------------------------
+const CustomError = require('../util/customError');
+
+const errorHandler = (err, req, res, next) => {
+  let error = { ...err };
+  error.message = err.message;
+
+  console.error(err);
+
+  if (err.name === 'CastError') {
+    error = new CustomError('Resource not found', 404);
+  }
+
+  if (err.code === 11000) {
+    error = new CustomError('Duplicate field value entered', 400);
+  }
+
+  if (err.name === 'ValidationError') {
+    const message = Object.values(err.errors).map(val => val.message).join(', ');
+    error = new CustomError(message, 400);
+  }
+
+  res.status(error.statusCode || 500).json({
+    success: false,
+    error: error.message || 'Server Error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+};
+
+module.exports = errorHandler;
+
+File: middleware\rateLimiter.js
+----------------------------------------
+const rateLimit = require('express-rate-limit');
+const CustomError = require('../utils/customError');
+
+const createRateLimiter = (windowMs, max, message) => {
+  return rateLimit({
+    windowMs,
+    max,
+    handler: (req, res) => {
+      throw new CustomError(message || 'Too many requests, please try again later', 429);
+    }
+  });
+};
+
+const authLimiter = createRateLimiter(
+  15 * 60 * 1000, // 15 minutes
+  5,
+  'Too many login attempts, please try again after 15 minutes'
+);
+
+const apiLimiter = createRateLimiter(
+  60 * 1000, // 1 minute
+  100,
+  'Too many requests, please try again after a minute'
+);
+
+module.exports = {
+  authLimiter,
+  apiLimiter
+};
+
+File: middleware\valid.js
+----------------------------------------
+const Joi = require('joi');
+const CustomError = require('../utils/customError');
+
+const validateRequest = (schema) => {
+  return (req, res, next) => {
+    const { error } = schema.validate(req.body, {
+      abortEarly: false,
+      stripUnknown: true
+    });
+
+    if (error) {
+      const errorMessage = error.details
+        .map(detail => detail.message)
+        .join(', ');
+      throw new CustomError(errorMessage, 400);
+    }
+
+    next();
+  };
+};
+
+// Validation schemas
+const surveySchema = Joi.object({
+  title: Joi.string().required().max(500).trim(),
+  description: Joi.string().allow('').trim(),
+  isTemplate: Joi.boolean(),
+  isArchived: Joi.boolean()
+});
+
+const questionSchema = Joi.object({
+  questionText: Joi.string().required().trim(),
+  responseType: Joi.string().valid('text', 'multiple-choice', 'single-choice', 'rating', 'boolean').required(),
+  allowMultiple: Joi.boolean(),
+  isMandatory: Joi.boolean(),
+  order: Joi.number().min(0),
+  responseValues: Joi.when('responseType', {
+    is: Joi.string().valid('multiple-choice', 'single-choice'),
+    then: Joi.array().items(Joi.string().required()).min(1).required(),
+    otherwise: Joi.forbidden()
+  })
+});
+
+const answerSchema = Joi.object({
+  answerValue: Joi.alternatives().conditional('questionType', {
+    switch: [
+      {
+        is: 'text',
+        then: Joi.string().required().trim()
+      },
+      {
+        is: 'multiple-choice',
+        then: Joi.array().items(Joi.string()).min(1).required()
+      },
+      {
+        is: 'single-choice',
+        then: Joi.string().required()
+      },
+      {
+        is: 'rating',
+        then: Joi.number().min(1).max(5).required()
+      },
+      {
+        is: 'boolean',
+        then: Joi.boolean().required()
+      }
+    ]
+  })
+});
+
+module.exports = {
+  validateSurvey: validateRequest(surveySchema),
+  validateQuestion: validateRequest(questionSchema),
+  validateAnswer: validateRequest(answerSchema)
+};
+
+File: middleware\validateDocument.js
+----------------------------------------
+const CustomError = require('../util/customError');
+
+const validateDocument = (Model, filterFunction) => {
+  return async (req, res, next) => {
+    try {
+      const filter = filterFunction(req);
+      const document = await Model.findOne(filter);
+
+      if (!document) {
+        return next(new CustomError('Resource not found', 404));
+      }
+
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+};
+
+module.exports = {
+  validateDocument,
+};
+
+
+File: models\answer.js
+----------------------------------------
+const mongoose = require('mongoose');
+const { baseModelOptions, baseSchemaFields } = require('./baseModel');
+
+const AnswerSchema = new mongoose.Schema({
+  questionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Question',
+    required: true
+  },
+  surveyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Survey',
+    required: true
+  },
+  respondentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  answerValue: {
+    type: mongoose.Schema.Types.Mixed,
+    required: true
+  },
+  isValid: {
+    type: Boolean,
+    default: false
+  },
+  validatedAt: {
+    type: Date
+  },
+  metadata: {
+    type: Map,
+    of: mongoose.Schema.Types.Mixed
+  },
+  ...baseSchemaFields
+}, baseModelOptions);
+
+AnswerSchema.index({ questionId: 1, respondentId: 1 }, { unique: true });
+AnswerSchema.index({ surveyId: 1 });
+AnswerSchema.index({ createdAt: 1 });
+
+module.exports = mongoose.model('Answer', AnswerSchema);
+
+File: models\baseModel.js
+----------------------------------------
+const mongoose = require('mongoose');
+
+const baseModel = {
+    timeStamps: true,
+    toJSON: {
+        virtuals: true,
+        transform: function(doc, ret) {
+          delete ret.__v;
+          ret.id = ret._id;
+          delete ret._id;
+        }
+      }
+}
+
+const baseSchema = {
+    createdBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: false
+      },
+      modifiedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: false
+      },
+      isActive: {
+        type: Boolean,
+        default: true
+      }
+    };
+
+    module.exports = {
+        baseModel,
+        baseSchema
+
+    }
+
+File: models\question.js
+----------------------------------------
+const mongoose = require('mongoose');
+const { baseModelOptions, baseSchemaFields } = require('./baseModel');
+
+const QuestionSchema = new mongoose.Schema({
+  surveyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Survey',
+    required: true
+  },
+  questionText: {
+    type: String,
+    required: [true, 'Please add the question text'],
+    trim: true
+  },
+  responseType: {
+    type: String,
+    enum: ['text', 'multiple-choice', 'single-choice', 'rating', 'boolean'],
+    required: [true, 'Please specify the response type']
+  },
+  allowMultiple: {
+    type: Boolean,
+    default: false
+  },
+  isMandatory: {
+    type: Boolean,
+    default: false
+  },
+  order: {
+    type: Number,
+    required: true
+  },
+  ...baseSchemaFields
+}, baseModelOptions);
+
+QuestionSchema.index({ surveyId: 1, order: 1 });
+QuestionSchema.index({ createdBy: 1 });
+
+module.exports = mongoose.model('Question', QuestionSchema);
+
+File: models\responseValue.js
+----------------------------------------
+const mongoose = require('mongoose');
+
+const ResponseValueSchema = new mongoose.Schema(
+  {
+    responseValue: {
+      type: String,
+      required: [true, 'Please add a response value'],
+    },
+    questionId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Question',
+      required: true,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: false,
+    },
+    modifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: false,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+module.exports = mongoose.model('ResponseValue', ResponseValueSchema);
+
+
+File: models\survey.js
+----------------------------------------
+const mongoose = require('mongoose');
+const {baseSchema, baseModel} = require('./baseModel')
+
+const SurveySchema = new mongoose.Schema(
+  {
+    title: {
+      type: String,
+      required: true,
+      unique: true,
+      maxlength: 500,
+    },
+    description: {
+      type: String,
+    },
+    isTemplate: {
+      type: Boolean,
+      default: false,
+    },
+    isArchived: {
+      type: Boolean,
+      default: false,
+    },
+    archivedAt: {
+      type: Date,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: false,
+    },
+    modifiedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: false,
+    },
+    questionOrder: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Question',
+      },
+    ],
+    questions: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Question',
+      },
+    ],
+  },
+  baseModel,
+  baseSchema
+);
+
+SurveySchema.index({ title: 1 }, { unique: true });
+SurveySchema.index({ createdBy: 1 });
+SurveySchema.index({ isArchived: 1 });
+
+module.exports = mongoose.model('Survey', SurveySchema);
+
+
+File: models\surveyProgress.js
+----------------------------------------
+const mongoose = require('mongoose');
+const { baseModelOptions, baseSchemaFields } = require('./baseModel');
+
+const SurveyProgressSchema = new mongoose.Schema({
+  surveyId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Survey',
+    required: true
+  },
+  respondentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  status: {
+    type: String,
+    enum: ['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED'],
+    default: 'NOT_STARTED'
+  },
+  startedAt: {
+    type: Date
+  },
+  completedAt: {
+    type: Date
+  },
+  lastAnsweredAt: {
+    type: Date
+  },
+  answeredQuestions: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Question'
+  }],
+  progress: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  ...baseSchemaFields
+}, baseModelOptions);
+
+SurveyProgressSchema.index({ surveyId: 1, respondentId: 1 }, { unique: true });
+SurveyProgressSchema.index({ status: 1 });
+SurveyProgressSchema.index({ completedAt: 1 });
+
+module.exports = mongoose.model('SurveyProgress', SurveyProgressSchema);
+
+File: models\user.js
+----------------------------------------
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const { baseModelOptions } = require('./baseModel');
+
+const UserSchema = new mongoose.Schema({
+  username: {
+    type: String,
+    required: [true, 'Please add a username'],
+    unique: true,
+    trim: true
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    match: [
+      /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
+      'Please add a valid email'
+    ]
+  },
+  password: {
+    type: String,
+    required: true,
+    minlength: 6,
+    select: false
+  },
+  role: {
+    type: String,
+    enum: ['user', 'admin'],
+    default: 'user'
+  },
+  lastLogin: {
+    type: Date
+  }
+}, baseModelOptions);
+
+UserSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) {
+    next();
+  }
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+});
+
+UserSchema.methods.matchPassword = async function(enteredPassword) {
+  return await bcrypt.compare(enteredPassword, this.password);
+};
+
+module.exports = mongoose.model('User', UserSchema);
+
+File: repositories\answer.js
+----------------------------------------
+const BaseRepository = require('./baseRepository');
+const Answer = require('../models/answer');
+
+class AnswerRepository extends BaseRepository {
+  constructor() {
+    super(Answer);
+  }
+
+  async findBySurveyAndRespondent(surveyId, respondentId) {
+    return await this.model
+      .find({ surveyId, respondentId })
+      .populate('questionId');
+  }
+
+  async findQuestionAnswers(questionId) {
+    return await this.model
+      .find({ questionId })
+      .populate('respondentId', 'username email');
+  }
+}
+
+module.exports = AnswerRepository;
+
+File: repositories\baseRepository.js
+----------------------------------------
+class BaseRepository {
+    constructor(model) {
+      this.model = model;
+    }
+  
+    async create(data) {
+      return await this.model.create(data);
+    }
+  
+    async findById(id, populate = '') {
+      return await this.model.findById(id).populate(populate);
+    }
+  
+    async findOne(filter = {}, populate = '') {
+      return await this.model.findOne(filter).populate(populate);
+    }
+  
+    async findAll(filter = {}, options = {}) {
+      const { sort = {}, populate = '', limit = 0, skip = 0 } = options;
+      return await this.model
+        .find(filter)
+        .sort(sort)
+        .populate(populate)
+        .limit(limit)
+        .skip(skip);
+    }
+  
+    async updateById(id, data) {
+      return await this.model.findByIdAndUpdate(
+        id,
+        data,
+        { new: true, runValidators: true }
+      );
+    }
+  
+    async updateMany(filter, data) {
+      return await this.model.updateMany(filter, data, { runValidators: true });
+    }
+  
+    async deleteById(id) {
+      return await this.model.findByIdAndDelete(id);
+    }
+  
+    async deleteMany(filter = {}) {
+      return await this.model.deleteMany(filter);
+    }
+  
+    async count(filter = {}) {
+      return await this.model.countDocuments(filter);
+    }
+  }
+  
+  module.exports = BaseRepository;
+
+File: repositories\question.js
+----------------------------------------
+const BaseRepository = require('./baseRepository');
+const Question = require('../models/question');
+
+class QuestionRepository extends BaseRepository {
+  constructor() {
+    super(Question);
+  }
+
+  async findBySurveyId(surveyId) {
+    return await this.model
+      .find({ surveyId })
+      .sort('order')
+      .populate('responseValues');
+  }
+
+  async getMaxOrder(surveyId) {
+    const result = await this.model
+      .findOne({ surveyId })
+      .sort('-order')
+      .select('order');
+    return result ? result.order : 0;
+  }
+}
+
+module.exports = QuestionRepository;
+
+File: repositories\responseValue.js
+----------------------------------------
+const BaseRepository = require('./baseRepository');
+const ResponseValue = require('../models/responseValue');
+
+class ResponseValueRepository extends BaseRepository {
+  constructor() {
+    super(ResponseValue);
+  }
+}
+
+module.exports = ResponseValueRepository;
+
+
+
+File: repositories\survey.js
+----------------------------------------
+const BaseRepository = require('./baseRepository');
+const Survey = require('../models/survey');
+
+class SurveyRepository extends BaseRepository {
+  constructor() {
+    super(Survey);
+  }
+
+  async findByIdWithQuestions(id) {
+    return await this.model
+      .findById(id)
+      .populate({
+        path: 'questions',
+        populate: {
+          path: 'responseValues'
+        }
+      });
+  }
+
+  async findAllWithQuestions(filter = {}) {
+    return await this.model
+      .find(filter)
+      .populate({
+        path: 'questions',
+        populate: {
+          path: 'responseValues'
+        }
+      });
+  }
+}
+
+module.exports = SurveyRepository;
+
+File: repositories\surveyProgress.js
+----------------------------------------
+const BaseRepository = require('./baseRepository');
+const SurveyProgress = require('../models/surveyProgress');
+
+class SurveyProgressRepository extends BaseRepository {
+  constructor() {
+    super(SurveyProgress);
+  }
+
+  async findBySurveyAndRespondent(surveyId, respondentId) {
+    return await this.model.findOne({ surveyId, respondentId });
+  }
+
+  async findBySurveyWithRespondents(surveyId) {
+    return await this.model
+      .find({ surveyId })
+      .populate('respondentId', 'username email')
+      .sort('-updatedAt');
+  }
+}
+
+module.exports = SurveyProgressRepository;
+
+File: repositories\user.js
+----------------------------------------
+const User = require('../models/user');
+const BaseRepository = require('./baseRepository');
+
+class UserRepository extends BaseRepository {
+  constructor() {
+    super(User);
+  }
+
+  async findByUsername(username) {
+    return await this.model.findOne({ username });
+  }
+}
+
+module.exports = UserRepository;
+
+
+File: routes\answer.js
+----------------------------------------
+const express = require('express');
+const router = express.Router();
+const { answerController } = require('../bootstrap');
+const auth = require('../middleware/auth');
+const { validateAnswer } = require('../middleware/validation');
+
+router.use(auth);
+
+router.post('/questions/:questionId',
+  validateAnswer,
+  answerController.submitAnswer
+);
+
+router.get('/surveys/:surveyId',
+  answerController.getAnswersBySurvey
+);
+
+router.get('/surveys/:surveyId/my-answers',
+  answerController.getMyAnswers
+);
+
+router.get('/questions/:questionId',
+  answerController.getAnswersByQuestion
+);
+
+module.exports = router;
+
+File: routes\question.js
+----------------------------------------
+const express = require('express');
+const router = express.Router();
+const { questionController } = require('../bootstrap');
+const auth = require('../middleware/auth');
+const { validateQuestion } = require('../middleware/validation');
+const checkOwnership = require('../middleware/checkOwnership');
+
+router.use(auth);
+
+router.route('/')
+  .post(validateQuestion, questionController.create);
+
+router.route('/:id')
+  .get(questionController.getById)
+  .put(checkOwnership('Question'), validateQuestion, questionController.updateQuestion)
+  .delete(checkOwnership('Question'), questionController.delete);
+
+router.put('/:id/move', checkOwnership('Question'), questionController.moveQuestion);
+
+module.exports = router;
+
+File: routes\responseValue.js
+----------------------------------------
+const express = require('express');
+const router = express.Router();
+const { responseValueController } = require('../bootstrap');
+const protect = require('../middleware/auth');
+const { validateDocument } = require('../middleware/validateDocument');
+const ResponseValue = require('../models/responseValue');
+
+router.post(
+  '/',
+  protect,
+  responseValueController.createResponseValue
+);
+
+router.get(
+  '/:id',
+  protect,
+  validateDocument(ResponseValue, (req) => ({ _id: req.params.id })),
+  responseValueController.getResponseValueById
+);
+
+router.put(
+  '/:id',
+  protect,
+  validateDocument(ResponseValue, (req) => ({ _id: req.params.id })),
+  responseValueController.updateResponseValueById
+);
+
+router.delete(
+  '/:id',
+  protect,
+  validateDocument(ResponseValue, (req) => ({ _id: req.params.id })),
+  responseValueController.deleteResponseValueById
+);
+
+module.exports = router;
+
+
+File: routes\survey.js
+----------------------------------------
+const express = require('express');
+const router = express.Router();
+const { surveyController } = require('../bootstrap');
+const auth = require('../middleware/auth');
+const { validateSurvey } = require('../middleware/validation');
+const checkOwnership = require('../middleware/checkOwnership');
+
+router.use(auth);
+
+router.route('/')
+  .get(surveyController.getAllSurveys)
+  .post(validateSurvey, surveyController.createSurvey);
+
+router.route('/:id')
+  .get(surveyController.getById)
+  .put(checkOwnership('Survey'), validateSurvey, surveyController.update)
+  .delete(checkOwnership('Survey'), surveyController.delete);
+
+router.post('/:id/duplicate', surveyController.duplicateSurvey);
+router.put('/:id/archive', checkOwnership('Survey'), surveyController.archiveSurvey);
+router.put('/:id/unarchive', checkOwnership('Survey'), surveyController.unarchiveSurvey);
+router.put('/:id/reorder-questions', checkOwnership('Survey'), surveyController.reorderQuestions);
+
+module.exports = router;
+
+File: routes\surveyProgress.js
+----------------------------------------
+const express = require('express');
+const router = express.Router();
+const { surveyProgressController } = require('../bootstrap');
+const auth = require('../middleware/auth');
+
+router.use(auth);
+
+router.post('/surveys/:surveyId/initialize',
+  surveyProgressController.initializeProgress
+);
+
+router.get('/surveys/:surveyId',
+  surveyProgressController.getProgress
+);
+
+router.get('/surveys/:surveyId/participants',
+  surveyProgressController.getParticipants
+);
+
+module.exports = router;
+
+File: routes\user.js
+----------------------------------------
+const express = require('express');
+const router = express.Router();
+const UserService = require('../service/user');
+const UserRepository = require('../repositories/user');
+const UserController = require('../controller/user');
+const authMiddleware = require('../middleware/auth');
+
+const userRepository = new UserRepository();
+const userService = new UserService(userRepository);
+const userController = new UserController(userService);
+
+router.post('/register', userController.registerUser);
+router.post('/login', userController.loginUser);
+router.get('/me', authMiddleware, userController.getCurrentUser);
+
+module.exports = router;
+
+
+File: script.js
+----------------------------------------
+const fs = require('fs');
+const path = require('path');
+
+var num = 0;
+
+// Directory to start scanning
+const startDir = './'; // Change this to your starting directory if needed
+const outputFilePath = 'output.txt';
+
+// Function to get all .js files from a directory recursively
+function getAllJsFiles(dir, fileList = []) {
+  const files = fs.readdirSync(dir);
+
+  files.forEach((file) => {
+    const filePath = path.join(dir, file);
+    const stat = fs.statSync(filePath);
+
+    if (stat.isDirectory() && file !== 'node_modules') {
+      getAllJsFiles(filePath, fileList);
+    } else if (path.extname(file) === '.js') {
+      fileList.push(filePath);
+    }
+  });
+
+  return fileList;
+}
+
+// Function to write all .js file names, paths, and content to a .txt file
+function writeJsFilesToTxt(jsFiles, outputFile) {
+  const writeStream = fs.createWriteStream(outputFile);
+
+  jsFiles.forEach((filePath) => {
+    const content = fs.readFileSync(filePath, 'utf8');
+    writeStream.write(`File: ${filePath}\n`);
+    writeStream.write('----------------------------------------\n');
+    writeStream.write(`${content}\n\n`);
+    num  = num +1;
+  });
+
+
+  writeStream.end();
+}
+
+// Main process
+try {
+  const jsFiles = getAllJsFiles(startDir);
+  writeJsFilesToTxt(jsFiles, outputFilePath);
+  console.log(`All JavaScript files have been written to ${outputFilePath}`);
+  console.log(num);
+} catch (err) {
+  console.error('Error:', err);
+}
+
+File: service\answer.js
+----------------------------------------
+
+const BaseService = require('./baseService');
+const CustomError = require('../util/customError');
+
+class AnswerService extends BaseService {
+  constructor(answerRepository) {
+    super(answerRepository);
+  }
+
+  async createAnswer(data) {
+    const answer = await this.create(data);
+    return answer;
+  }
+
+  async getAnswersBySurvey(surveyId) {
+    const answers = await this.findAll({ surveyId });
+    return answers;
+  }
+
+  async getAnswersByQuestion(questionId) {
+    const answers = await this.findAll({ questionId });
+    return answers;
+  }
+}
+
+module.exports = AnswerService;
+
+
+File: service\baseService.js
+----------------------------------------
+const CustomError = require('../util/customError');
+
+class BaseService {
+  constructor(repository) {
+    this.repository = repository;
+  }
+
+  async create(data) {
+    return await this.repository.create(data);
+  }
+
+  async findById(id, populate = '') {
+    const item = await this.repository.findById(id, populate);
+    if (!item) {
+      throw new CustomError('Resource not found', 404);
+    }
+    return item;
+  }
+
+  async findAll(filter = {}, options = {}) {
+    return await this.repository.findAll(filter, options);
+  }
+
+  async updateById(id, data) {
+    const item = await this.repository.updateById(id, data);
+    if (!item) {
+      throw new CustomError('Resource not found', 404);
+    }
+    return item;
+  }
+
+  async deleteById(id) {
+    const item = await this.repository.deleteById(id);
+    if (!item) {
+      throw new CustomError('Resource not found', 404);
+    }
+    return item;
+  }
+}
+
+module.exports = BaseService;
+
+File: service\question.js
+----------------------------------------
+const BaseService = require('./baseService');
+const CustomError = require('../util/customError');
+
+class QuestionService extends BaseService {
+  constructor(questionRepository, responseValueService, surveyService) {
+    super(questionRepository);
+    this.responseValueService = responseValueService;
+    this.surveyService = surveyService;
+  }
+
+  async createQuestion(data) {
+    const question = await this.create(data);
+    const questionID = question._id;
+
+    await this.surveyService.addQuestionToSurvey(question.surveyId, questionID);
+
+    if (data.responseValues && data.responseValues.length > 0) {
+      for (const value of data.responseValues) {
+        const responseValueObject = {
+          questionId: questionID,
+          responseValue: value,
+        };
+        await this.responseValueService.createResponseValue(responseValueObject);
+      }
+    }
+
+    return question;
+  }
+
+  async getQuestionById(questionId) {
+    const question = await this.findById(questionId);
+    if (!question) {
+      throw new CustomError('Question not found', 404);
+    }
+
+    const responseValues = await this.responseValueService.findAll({ questionId: question._id });
+    question.responseValues = responseValues;
+
+    return question;
+  }
+
+  async updateQuestion(questionId, data) {
+    const question = await this.updateById(questionId, data);
+    if (!question) {
+      throw new CustomError('Question not found', 404);
+    }
+    return question;
+  }
+
+  async deleteQuestion(questionId) {
+    const question = await this.findById(questionId);
+    if (!question) {
+      throw new CustomError('Question not found', 404);
+    }
+
+    await this.surveyService.removeQuestionFromSurvey(question.surveyId, questionId);
+
+    await this.responseValueService.deleteMany({ questionId });
+
+    await this.deleteById(questionId);
+
+    return question;
+  }
+
+  async deleteQuestionsBySurveyId(surveyId) {
+    const questions = await this.findAll({ surveyId });
+    for (const question of questions) {
+      await this.deleteQuestion(question._id);
+    }
+  }
+
+  async moveQuestion(surveyId, questionId, direction) {
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
+    const index = survey.questionOrder.findIndex((id) => id.toString() === questionId);
+    if (index === -1) {
+      throw new CustomError('Question not found in survey', 404);
+    }
+
+    if (direction === 'up' && index > 0) {
+      [survey.questionOrder[index - 1], survey.questionOrder[index]] = [
+        survey.questionOrder[index],
+        survey.questionOrder[index - 1],
+      ];
+    } else if (direction === 'down' && index < survey.questionOrder.length - 1) {
+      [survey.questionOrder[index], survey.questionOrder[index + 1]] = [
+        survey.questionOrder[index + 1],
+        survey.questionOrder[index],
+      ];
+    } else {
+      throw new CustomError('Cannot move question in that direction', 400);
+    }
+
+    await this.surveyService.updateSurvey(surveyId, { questionOrder: survey.questionOrder });
+
+    return survey;
+  }
+
+  
+}
+
+module.exports = QuestionService;
+
+
+File: service\responseValue.js
+----------------------------------------
+const BaseService = require('./baseService');
+const CustomError = require('../util/customError');
+
+class ResponseValueService extends BaseService {
+  constructor(responseValueRepository) {
+    super(responseValueRepository);
+ }
+
+  async createResponseValue(data) {
+    const responseValue = await this.create(data);
+    return responseValue;
+  }
+
+  async getResponseValueById(responseValueId) {
+    const responseValue = await this.findById(responseValueId);
+    if (!responseValue) {
+      throw new CustomError('Response Value not found', 404);
+    }
+    return responseValue;
+  }
+
+  async updateResponseValue(responseValueId, data) {
+    const responseValue = await this.updateById(responseValueId, data);
+    if (!responseValue) {
+      throw new CustomError('Response Value not found', 404);
+    }
+    return responseValue;
+  }
+
+  async deleteResponseValue(responseValueId) {
+    const responseValue = await this.deleteById(responseValueId);
+    if (!responseValue) {
+      throw new CustomError('Response Value not found', 404);
+    }
+    return responseValue;
+  }
+
+  async deleteMany(filter) {
+    await this.repository.deleteMany(filter);
+  }
+}
+
+module.exports = ResponseValueService;
+
+
+File: service\survey.js
+----------------------------------------
+const BaseService = require('./baseService');
+const CustomError = require('../util/customError');
+
+class SurveyService extends BaseService {
+  constructor(surveyRepository) {
+    super(surveyRepository);
+    this._questionService = null;
+  }
+
+  setQuestionService(questionService) {
+    this._questionService = questionService;
+  }
+
+  async createSurvey(data) {
+    const survey = await this.create({
+      ...data,
+      questions: [],
+      questionOrder: []
+    });
+    return survey;
+  }
+
+  async getSurveyById(id) {
+    const survey = await this.repository.findByIdWithQuestions(id);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+    return survey;
+  }
+
+  async getAllSurveys(filter = {}) {
+    return await this.repository.findAllWithQuestions(filter);
+  }
+
+  async addQuestionToSurvey(surveyId, questionId) {
+    const survey = await this.findById(surveyId);
+    if (!survey.questions.includes(questionId)) {
+      survey.questions.push(questionId);
+      survey.questionOrder.push(questionId);
+      await survey.save();
+    }
+    return survey;
+  }
+
+  async reorderQuestions(surveyId, questionOrder) {
+    const survey = await this.findById(surveyId);
+    const currentQuestions = new Set(survey.questions.map(q => q.toString()));
+    
+    if (!questionOrder.every(id => currentQuestions.has(id.toString()))) {
+      throw new CustomError('Invalid question order provided', 400);
+    }
+
+    survey.questionOrder = questionOrder;
+    await survey.save();
+    return survey;
+  }
+
+  async archiveSurvey(id, userId) {
+    const survey = await this.updateById(id, {
+      isArchived: true,
+      archivedAt: new Date(),
+      modifiedBy: userId
+    });
+    return survey;
+  }
+
+  async unarchiveSurvey(id, userId) {
+    const survey = await this.updateById(id, {
+      isArchived: false,
+      archivedAt: null,
+      modifiedBy: userId
+    });
+    return survey;
+  }
+
+  async duplicateSurvey(id, userId) {
+    const originalSurvey = await this.getSurveyById(id);
+    const surveyData = {
+      title: `${originalSurvey.title} (Copy)`,
+      description: originalSurvey.description,
+      isTemplate: originalSurvey.isTemplate,
+      createdBy: userId
+    };
+
+    const newSurvey = await this.createSurvey(surveyData);
+
+    for (const question of originalSurvey.questions) {
+      const newQuestion = await this._questionService.duplicateQuestion(
+        question._id,
+        newSurvey._id,
+        userId
+      );
+      await this.addQuestionToSurvey(newSurvey._id, newQuestion._id);
+    }
+
+    return await this.getSurveyById(newSurvey._id);
+  }
+}
+
+module.exports = SurveyService;
+
+File: service\surveyProgress.js
+----------------------------------------
+const BaseService = require('./baseService');
+const CustomError = require('../util/customError');
+
+class SurveyProgressService extends BaseService {
+  constructor(surveyProgressRepository, surveyService) {
+    super(surveyProgressRepository);
+    this.surveyService = surveyService;
+  }
+
+  async initializeProgress(surveyId, respondentId) {
+    await this.surveyService.findById(surveyId);
+
+    let progress = await this.repository.findBySurveyAndRespondent(
+      surveyId,
+      respondentId
+    );
+
+    if (!progress) {
+      progress = await this.create({
+        surveyId,
+        respondentId,
+        status: 'NOT_STARTED',
+        progress: 0,
+        answeredQuestions: []
+      });
+    }
+
+    return progress;
+  }
+
+  async updateProgress(surveyId, respondentId, questionId) {
+    const survey = await this.surveyService.getSurveyById(surveyId);
+    const progress = await this.repository.findBySurveyAndRespondent(
+      surveyId,
+      respondentId
+    );
+
+    if (!progress) {
+      throw new CustomError('Survey progress not found', 404);
+    }
+
+    // Update progress status
+    if (progress.status === 'NOT_STARTED') {
+      progress.status = 'IN_PROGRESS';
+      progress.startedAt = new Date();
+    }
+
+    // Update answered questions
+    if (!progress.answeredQuestions.includes(questionId)) {
+      progress.answeredQuestions.push(questionId);
+    }
+
+    // Calculate progress percentage
+    progress.progress = (progress.answeredQuestions.length / survey.questions.length) * 100;
+    progress.lastAnsweredAt = new Date();
+
+    // Check if survey is completed
+    if (progress.progress === 100) {
+      progress.status = 'COMPLETED';
+      progress.completedAt = new Date();
+    }
+
+    await progress.save();
+    return progress;
+  }
+
+  async getProgress(surveyId, respondentId) {
+    const progress = await this.repository.findBySurveyAndRespondent(
+      surveyId,
+      respondentId
+    );
+    if (!progress) {
+      throw new CustomError('Survey progress not found', 404);
+    }
+    return progress;
+  }
+
+  async getSurveyParticipants(surveyId) {
+    return await this.repository.findBySurveyWithRespondents(surveyId);
+  }
+}
+
+module.exports = SurveyProgressService;
+
+File: service\user.js
+----------------------------------------
+const BaseService = require('./baseService');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const keys = require('../config/keys');
+const CustomError = require('../util/customError');
+
+class UserService extends BaseService {
+  constructor(repository) {
+    super(repository);
+  }
+
+  async registerUser(userData) {
+    const { username, password } = userData;
+    let user = await this.repository.findByUsername(username);
+    if (user) {
+      throw new CustomError(`User with username ${username} already exists`, 400);
+    }
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newUser = await this.repository.create({
+      username,
+      password: hashedPassword,
+    });
+    const token = jwt.sign({ id: newUser._id }, keys.jwtSecret, {
+      expiresIn: '1d',
+    });
+    return { user: { id: newUser._id, username: newUser.username }, token };
+  }
+
+  async loginUser(userData) {
+    const { username, password } = userData;
+    let user = await this.repository.findByUsername(username);
+    if (!user) {
+      throw new CustomError('Invalid user details', 400);
+    }
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      throw new CustomError('Wrong password', 400);
+    }
+    const token = jwt.sign({ id: user._id }, keys.jwtSecret, { expiresIn: '1d' });
+    return { user: { id: user._id, username: user.username }, token };
+  }
+
+  async getUserById(userId) {
+    const user = await this.findById(userId);
+    if (!user) {
+      throw new CustomError('User not found', 404);
+    }
+    return user;
+  }
+}
+
+module.exports = UserService;
+
+
+File: tests\fixtures\index.js
+----------------------------------------
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userFixture = async () => {
+  const password = await bcrypt.hash('Password123', 10);
+  return {
+    _id: new mongoose.Types.ObjectId(),
+    username: 'testuser',
+    email: 'test@example.com',
+    password,
+    role: 'user'
+  };
+};
+
+const surveyFixture = (userId) => ({
+  _id: new mongoose.Types.ObjectId(),
+  title: 'Test Survey',
+  description: 'Test Description',
+  createdBy: userId,
+  questions: [],
+  questionOrder: []
+});
+
+const questionFixture = (surveyId, userId) => ({
+  _id: new mongoose.Types.ObjectId(),
+  surveyId,
+  questionText: 'Test Question',
+  responseType: 'multiple-choice',
+  allowMultiple: true,
+  isMandatory: false,
+  createdBy: userId,
+  order: 0
+});
+
+module.exports = {
+  userFixture,
+  surveyFixture,
+  questionFixture
+};
+
+File: tests\integration\survey.test.js
+----------------------------------------
+const request = require('supertest');
+const app = require('../../index');
+const mongoose = require('mongoose');
+const { userFixture, surveyFixture } = require('../fixtures');
+const { connect, closeDatabase, clearDatabase } = require('../setup');
+const generateToken = require('../../utils/generateToken');
+
+describe('Survey API', () => {
+  let token;
+  let user;
+  let survey;
+
+  beforeAll(async () => {
+    await connect();
+    user = await userFixture();
+    token = generateToken(user._id);
+    await mongoose.connection.collection('users').insertOne(user);
+  });
+
+  beforeEach(async () => {
+    survey = surveyFixture(user._id);
+    await mongoose.connection.collection('surveys').insertOne(survey);
+  });
+
+  afterEach(async () => {
+    await clearDatabase();
+  });
+
+  afterAll(async () => {
+    await closeDatabase();
+  });
+
+  describe('GET /api/surveys', () => {
+    it('should return all surveys', async () => {
+      const res = await request(app)
+        .get('/api/surveys')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.data)).toBeTruthy();
+    });
+  });
+});
+
+File: tests\setup.js
+----------------------------------------
+const mongoose = require('mongoose');
+const { MongoMemoryServer } = require('mongodb-memory-server');
+const config = require('../config/environment');
+
+let mongod;
+
+// Connect to the in-memory database
+module.exports.connect = async () => {
+  mongod = await MongoMemoryServer.create();
+  const uri = mongod.getUri();
+  await mongoose.connect(uri);
+};
+
+// Drop database, close connection and stop mongod
+module.exports.closeDatabase = async () => {
+  await mongoose.connection.dropDatabase();
+  await mongoose.connection.close();
+  await mongod.stop();
+};
+
+// Clear all data from collections
+module.exports.clearDatabase = async () => {
+  const collections = mongoose.connection.collections;
+  for (const key in collections) {
+    await collections[key].deleteMany();
+  }
+};
+
+File: tests\unit\services\survey.test.js
+----------------------------------------
+const SurveyService = require('../../../services/survey');
+const CustomError = require('../../../utils/customError');
+
+describe('SurveyService', () => {
+  let surveyService;
+  let mockRepository;
+
+  beforeEach(() => {
+    mockRepository = {
+      create: jest.fn(),
+      findById: jest.fn(),
+      findAll: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn()
+    };
+    surveyService = new SurveyService(mockRepository);
+  });
+
+  describe('createSurvey', () => {
+    it('should create a survey successfully', async () => {
+      const surveyData = {
+        title: 'Test Survey',
+        description: 'Test Description'
+      };
+
+      mockRepository.create.mockResolvedValue(surveyData);
+
+      const result = await surveyService.createSurvey(surveyData);
+
+      expect(result).toEqual(surveyData);
+      expect(mockRepository.create).toHaveBeenCalledWith(surveyData);
+    });
+  });
+});
+
+File: util\customError.js
+----------------------------------------
+class CustomError extends Error {
+    constructor(message, statusCode) {
+      super(message);
+      this.statusCode = statusCode;
+      this.status = `${statusCode}`.startsWith('4') ? 'fail' : 'error';
+      this.isOperational = true;
+  
+      Error.captureStackTrace(this, this.constructor);
+    }
+  }
+  
+  module.exports = CustomError;
+
+File: util\formatResponse.js
+----------------------------------------
+const formatResponse = (data, message = '') => {
+    return {
+      success: true,
+      message,
+      data
+    };
+  };
+  
+  module.exports = formatResponse;
+  
+
+File: util\generateToken.js
+----------------------------------------
+const jwt = require('jsonwebtoken');
+const config = require('../config/environment');
+
+const generateToken = (userId) => {
+  return jwt.sign(
+    { id: userId },
+    config.jwtSecret,
+    { expiresIn: config.jwtExpiration }
+  );
+};
+
+module.exports = generateToken;
+
+File: util\logger.js
+----------------------------------------
+const winston = require('winston');
+const config = require('../config/environment');
+
+const logger = winston.createLogger({
+  level: config.env === 'development' ? 'debug' : 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ filename: 'error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'combined.log' })
+  ]
+});
+
+if (config.env === 'development') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.simple()
+  }));
+}
+
+module.exports = logger;
+
+File: util\validators.js
+----------------------------------------
+const validators = {
+    isValidEmail: (email) => {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      return emailRegex.test(email);
+    },
+  
+    isValidPassword: (password) => {
+      // Minimum 8 characters, at least one uppercase letter, one lowercase letter, one number
+      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d]{8,}$/;
+      return passwordRegex.test(password);
+    },
+  
+    isValidMongoId: (id) => {
+      const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+      return objectIdRegex.test(id);
+    },
+  
+    sanitizeString: (str) => {
+      return str.trim().replace(/[<>]/g, '');
+    }
+  };
+  
+  module.exports = validators;
+
+File: validation\schemas.js
+----------------------------------------
+const Joi = require('joi');
+
+const schemas = {
+  // User validation schemas
+  user: {
+    register: Joi.object({
+      username: Joi.string().required().min(3).max(30),
+      email: Joi.string().required().email(),
+      password: Joi.string()
+        .required()
+        .min(8)
+        .pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
+        .message('Password must contain at least one uppercase letter, one lowercase letter, and one number')
+    }),
+
+    login: Joi.object({
+      email: Joi.string().required().email(),
+      password: Joi.string().required()
+    }),
+
+    update: Joi.object({
+      username: Joi.string().min(3).max(30),
+      email: Joi.string().email()
+    })
+  },
+
+  // Survey validation schemas
+  survey: {
+    create: Joi.object({
+      title: Joi.string().required().max(500).trim(),
+      description: Joi.string().allow('').trim(),
+      isTemplate: Joi.boolean().default(false),
+      isArchived: Joi.boolean().default(false)
+    }),
+
+    update: Joi.object({
+      title: Joi.string().max(500).trim(),
+      description: Joi.string().allow('').trim(),
+      isTemplate: Joi.boolean(),
+      isArchived: Joi.boolean()
+    }),
+
+    reorderQuestions: Joi.object({
+      questionOrder: Joi.array().items(
+        Joi.string().pattern(/^[0-9a-fA-F]{24}$/)
+      ).required()
+    })
+  },
+
+  // Question validation schemas
+  question: {
+    create: Joi.object({
+      questionText: Joi.string().required().trim(),
+      responseType: Joi.string()
+        .required()
+        .valid('text', 'multiple-choice', 'single-choice', 'rating', 'boolean'),
+      allowMultiple: Joi.boolean().when('responseType', {
+        is: 'multiple-choice',
+        then: Joi.boolean().required(),
+        otherwise: Joi.boolean().valid(false)
+      }),
+      isMandatory: Joi.boolean().default(false),
+      responseValues: Joi.when('responseType', {
+        is: Joi.string().valid('multiple-choice', 'single-choice'),
+        then: Joi.array().items(Joi.string().required()).min(1).required(),
+        otherwise: Joi.forbidden()
+      })
+    }),
+
+    update: Joi.object({
+      questionText: Joi.string().trim(),
+      isMandatory: Joi.boolean(),
+      responseValues: Joi.array().items(Joi.string())
+    })
+  },
+
+  // Answer validation schemas
+  answer: {
+    submit: Joi.object({
+      answerValue: Joi.alternatives()
+        .try(
+          Joi.string(),
+          Joi.array().items(Joi.string()),
+          Joi.number().min(1).max(5),
+          Joi.boolean()
+        )
+        .required()
+    })
+  }
+};
+
+module.exports = schemas;
+
+File: validation\validationEnv.js
+----------------------------------------
+const envalid = require('envalid');
+const { str, port } = envalid;
+
+const validateEnv = () => {
+  return envalid.cleanEnv(process.env, {
+    NODE_ENV: str({
+      choices: ['development', 'test', 'production']
+    }),
+    PORT: port(),
+    MONGODB_URI: str(),
+    JWT_SECRET: str(),
+    REDIS_URL: str({ default: 'redis://localhost:6379' })
+  });
+};
+
+module.exports = validateEnv;
+
