@@ -361,16 +361,6 @@ GET /api/survey-progress/surveys/:surveyId
    - Completion tracking
    - Statistics generation
 
-## 📈 Future Enhancements
-
-- Enhanced analytics
-- Question branching
-- Survey templates
-- Bulk operations
-- Export functionality
-- Media support
-- Advanced reporting
-
 ## 🤝 Contributing
 
 Please read CONTRIBUTING.md for details on our code of conduct and the process for submitting pull requests.
