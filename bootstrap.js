@@ -27,7 +27,6 @@ const surveyService = new SurveyService(surveyRepository);
 const questionService = new QuestionService(questionRepository, surveyService);
 surveyService.setQuestionService(questionService);
 
-const answerService = new AnswerService(answerRepository, questionService, surveyService);
 const userService = new UserService(userRepository);
 const surveyProgressService = new SurveyProgressService(
   surveyProgressRepository,
@@ -35,6 +34,7 @@ const surveyProgressService = new SurveyProgressService(
   questionService
 );
 
+const answerService = new AnswerService(answerRepository, questionService, surveyService, surveyProgressService);
 const surveyController = new SurveyController(surveyService);
 const questionController = new QuestionController(questionService);
 const answerController = new AnswerController(answerService);

@@ -29,7 +29,6 @@ const QuestionSchema = new mongoose.Schema({
     enum: ['text', 'multiple-choice', 'single-choice', 'rating', 'boolean'],
     required: [true, 'Please specify the response type']
   },
-  responseValues: [ResponseValueSchema],
   allowMultiple: {
     type: Boolean,
     default: false
@@ -45,19 +44,8 @@ const QuestionSchema = new mongoose.Schema({
   ...baseSchemaFields
 }, baseModelOptions);
 
+// Indexes
 QuestionSchema.index({ surveyId: 1, order: 1 });
 QuestionSchema.index({ createdBy: 1 });
-
-QuestionSchema.pre('save', function(next) {
-  if (this.responseType === 'multiple-choice' || this.responseType === 'single-choice') {
-    if (!this.responseValues || this.responseValues.length === 0) {
-      next(new Error('Response values are required for choice questions'));
-    }
-  } else {
-    this.responseValues = [];
-    this.allowMultiple = false;
-  }
-  next();
-});
 
 module.exports = mongoose.model('Question', QuestionSchema);

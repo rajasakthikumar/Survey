@@ -20,6 +20,7 @@ router.route('/:id')
   .put(checkOwnership('Survey'), validateSurveyUpdate, surveyController.update)
   .delete(checkOwnership('Survey'), surveyController.delete);
 
+router.get('/:id',surveyController.getById)
 router.post('/:id/duplicate', surveyController.duplicateSurvey);
 router.put('/:id/archive', checkOwnership('Survey'), surveyController.archiveSurvey);
 router.put('/:id/unarchive', checkOwnership('Survey'), surveyController.unarchiveSurvey);

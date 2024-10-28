@@ -10,7 +10,6 @@ const SurveyService = require('./service/survey');
 const QuestionService = require('./service/question');
 const AnswerService = require('./service/answer');
 const UserService = require('./service/user');
-
 const SurveyProgressService = require('./service/surveyProgress');
 
 const SurveyController = require('./controller/survey');
@@ -34,7 +33,8 @@ const answerService = new AnswerService(answerRepository, questionService, surve
 const userService = new UserService(userRepository);
 const surveyProgressService = new SurveyProgressService(
   surveyProgressRepository,
-  surveyService
+  surveyService,
+  questionService
 );
 
 const surveyController = new SurveyController(surveyService);
@@ -59,7 +59,7 @@ module.exports = {
   mongoURI: process.env.MONGODB_URI || 'mongodb://localhost:27017/survey',
   jwtSecret: process.env.JWT_SECRET || 'secret',
   port: process.env.PORT || 5000,
-  nodeEnv: process.env.NODE_ENV || 'development'
+  // nodeEnv: process.env.NODE_ENV || 'development'
 };
 
 File: controller\answer.js
@@ -309,14 +309,16 @@ class SurveyProgressController extends BaseController {
 
   getParticipants = asyncHandler(async (req, res) => {
     const participants = await this.service.getSurveyParticipants(
-      req.params.surveyId
+      req.params.surveyId,
+      req.user.id
     );
     res.status(200).json(formatResponse(participants));
   });
 
   getCompletionStats = asyncHandler(async (req, res) => {
     const stats = await this.service.getCompletionStats(
-      req.params.surveyId
+      req.params.surveyId,
+      req.user.id
     );
     res.status(200).json(formatResponse(stats));
   });
@@ -1447,45 +1449,45 @@ module.exports = router;
 
 File: routes\surveyProgress.js
 ----------------------------------------
+// routes/surveyProgress.js
 const express = require('express');
 const router = express.Router();
 const { surveyProgressController } = require('../bootstrap');
 const auth = require('../middleware/auth');
-const { validateDocument } = require('../middleware/validateDocument');
-const Survey = require('../models/survey');
 
 router.use(auth);
 
+// Initialize progress for a survey
 router.post(
   '/surveys/:surveyId/initialize',
-  validateDocument(Survey, (req) => ({ _id: req.params.surveyId })),
   surveyProgressController.initializeProgress
 );
 
+// Update progress after answering a question
 router.put(
   '/surveys/:surveyId/questions/:questionId',
-  validateDocument(Survey, (req) => ({ _id: req.params.surveyId })),
   surveyProgressController.updateProgress
 );
 
+// Get progress for a specific survey
 router.get(
   '/surveys/:surveyId',
-  validateDocument(Survey, (req) => ({ _id: req.params.surveyId })),
   surveyProgressController.getProgress
 );
 
+// Get all participants for a survey
 router.get(
   '/surveys/:surveyId/participants',
-  validateDocument(Survey, (req) => ({ _id: req.params.surveyId })),
   surveyProgressController.getParticipants
 );
 
+// Get completion statistics for a survey
 router.get(
   '/surveys/:surveyId/stats',
-  validateDocument(Survey, (req) => ({ _id: req.params.surveyId })),
   surveyProgressController.getCompletionStats
 );
 
+// Get current user's progress across all surveys
 router.get(
   '/my-progress',
   surveyProgressController.getMyProgress
@@ -2063,18 +2065,23 @@ class SurveyService extends BaseService {
 
 File: service\surveyProgress.js
 ----------------------------------------
+// services/surveyProgress.js
 const BaseService = require('./baseService');
 const CustomError = require('../utils/customError');
 
 class SurveyProgressService extends BaseService {
-  constructor(surveyProgressRepository, surveyService) {
+  constructor(surveyProgressRepository, surveyService, questionService) {
     super(surveyProgressRepository);
     this.surveyService = surveyService;
+    this.questionService = questionService;
   }
 
   async initializeProgress(surveyId, respondentId) {
     // Verify survey exists
-    await this.surveyService.findById(surveyId);
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
 
     // Check for existing progress
     let progress = await this.repository.findBySurveyAndRespondent(
@@ -2097,29 +2104,34 @@ class SurveyProgressService extends BaseService {
 
   async updateProgress(surveyId, respondentId, questionId) {
     const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
+    const question = await this.questionService.findById(questionId);
+    if (!question || question.surveyId.toString() !== surveyId) {
+      throw new CustomError('Question not found in this survey', 404);
+    }
+
     const progress = await this.repository.findBySurveyAndRespondent(
       surveyId,
       respondentId
     );
 
     if (!progress) {
-      throw new CustomError('Survey progress not found', 404);
+      throw new CustomError('Survey progress not found for this survey', 404);
     }
 
-    // Update progress status
     if (progress.status === 'NOT_STARTED') {
       progress.status = 'IN_PROGRESS';
     }
 
-    // Add question to answered questions if not already present
     if (!progress.answeredQuestions.includes(questionId)) {
       progress.answeredQuestions.push(questionId);
     }
 
-    // Calculate progress percentage
     progress.progress = (progress.answeredQuestions.length / survey.questions.length) * 100;
 
-    // Check if survey is completed
     if (progress.progress === 100) {
       progress.status = 'COMPLETED';
     }
@@ -2128,22 +2140,112 @@ class SurveyProgressService extends BaseService {
     return progress;
   }
 
+  async updateBulkProgress(surveyId, respondentId, questionIds) {
+    if (!Array.isArray(questionIds)) {
+        throw new CustomError('questionIds must be an array', 400);
+    }
+
+    if (questionIds.length === 0) {
+        throw new CustomError('questionIds array cannot be empty', 400);
+    }
+
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+        throw new CustomError('Survey not found', 404);
+    }
+
+    const surveyQuestionIds = survey.questions.map(q => q.toString());
+    const invalidQuestions = questionIds.filter(qId => !surveyQuestionIds.includes(qId.toString()));
+    if (invalidQuestions.length > 0) {
+        throw new CustomError(
+            `Questions with IDs: ${invalidQuestions.join(', ')} do not belong to this survey`,
+            400
+        );
+    }
+
+    const progress = await this.repository.findBySurveyAndRespondent(surveyId, respondentId);
+    if (!progress) {
+        throw new CustomError(
+            `No survey progress found for user ${respondentId} on survey ${surveyId}`,
+            404
+        );
+    }
+
+    try {
+        if (progress.status === 'NOT_STARTED') {
+            progress.status = 'IN_PROGRESS';
+        }
+
+        const uniqueQuestionIds = new Set([
+            ...progress.answeredQuestions.map(q => q.toString()),
+            ...questionIds.map(q => q.toString())
+        ]);
+        progress.answeredQuestions = Array.from(uniqueQuestionIds);
+
+        progress.progress = Math.min(
+            (progress.answeredQuestions.length / survey.questions.length) * 100,
+            100
+        );
+
+        if (progress.progress === 100) {
+            progress.status = 'COMPLETED';
+            progress.completedAt = new Date();
+        }
+
+        progress.lastAnsweredAt = new Date();
+
+        await progress.save();
+        return progress;
+    } catch (error) {
+        throw new CustomError(
+            `Failed to update progress: ${error.message}`,
+            500
+        );
+    }
+}
+  
+
   async getProgress(surveyId, respondentId) {
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
     const progress = await this.repository.findBySurveyAndRespondent(
       surveyId,
       respondentId
     );
+
     if (!progress) {
       throw new CustomError('Survey progress not found', 404);
     }
+
     return progress;
   }
 
-  async getSurveyParticipants(surveyId) {
+  async getSurveyParticipants(surveyId, requesterId) {
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
+    if (survey.createdBy.toString() !== requesterId && requesterId.role !== 'admin') {
+      throw new CustomError('Not authorized to view participants', 403);
+    }
+
     return await this.repository.findBySurveyWithRespondents(surveyId);
   }
 
-  async getCompletionStats(surveyId) {
+  async getCompletionStats(surveyId, requesterId) {
+    const survey = await this.surveyService.findById(surveyId);
+    if (!survey) {
+      throw new CustomError('Survey not found', 404);
+    }
+
+    if (survey.createdBy.toString() !== requesterId && requesterId.role !== 'admin') {
+      throw new CustomError('Not authorized to view statistics', 403);
+    }
+
     return await this.repository.getCompletionStats(surveyId);
   }
 

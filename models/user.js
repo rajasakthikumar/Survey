@@ -16,17 +16,16 @@ const UserSchema = new mongoose.Schema({
     required: [true, 'Please add an email'],
     unique: true,
     trim: true,
-    lowercase: true,
     match: [
-      /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
-      'Please add a valid email'
+      /^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/,
+      'Please enter a valid email'
     ]
   },
   password: {
     type: String,
     required: [true, 'Please add a password'],
     minlength: [6, 'Password must be at least 6 characters long'],
-    select: false
+    select: false // Don't include password by default in queries
   },
   role: {
     type: String,
@@ -38,17 +37,28 @@ const UserSchema = new mongoose.Schema({
   }
 }, baseModelOptions);
 
+// Hash password only when it's modified
 UserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) {
     return next();
   }
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
-  next();
+  
+  try {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
+// Method to compare passwords
 UserSchema.methods.matchPassword = async function(enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
+  try {
+    return await bcrypt.compare(enteredPassword, this.password);
+  } catch (error) {
+    throw new Error('Error comparing passwords');
+  }
 };
 
 module.exports = mongoose.model('User', UserSchema);

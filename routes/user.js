@@ -9,6 +9,6 @@ const {
 
 router.post('/register', validateUserRegister, userController.registerUser);
 router.post('/login', validateUserLogin, userController.loginUser);
-router.get('/me', auth, userController.getCurrentUser);
+router.get('/current', auth, userController.getCurrentUser);
 
 module.exports = router;

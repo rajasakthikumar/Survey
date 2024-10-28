@@ -11,7 +11,7 @@ const checkOwnership = require('../middleware/checkOwnership');
 router.use(auth);
 
 router.route('/')
-  .post(validateQuestion, questionController.create);
+  .post(validateQuestion, questionController.createQuestion);
 
 router.route('/:id')
   .get(questionController.getById)

@@ -15,6 +15,18 @@ class BaseRepository {
       return await this.model.findOne(filter).populate(populate);
     }
   
+    async find(filter = {}, options = {}) {
+      const { sort = {}, populate = '', select = '', limit = 0, skip = 0 } = options;
+      return await this.model
+        .find(filter)
+        .sort(sort)
+        .populate(populate)
+        .select(select)
+        .limit(limit)
+        .skip(skip)
+        .lean();
+    }
+  
     async findAll(filter = {}, options = {}) {
       const { sort = {}, populate = '', limit = 0, skip = 0 } = options;
       return await this.model
@@ -22,7 +34,8 @@ class BaseRepository {
         .sort(sort)
         .populate(populate)
         .limit(limit)
-        .skip(skip);
+        .skip(skip)
+        .lean();
     }
   
     async updateById(id, data) {
@@ -31,6 +44,18 @@ class BaseRepository {
         data,
         { new: true, runValidators: true }
       );
+    }
+  
+    async updateOne(filter, data) {
+      return await this.model.findOneAndUpdate(
+        filter,
+        data,
+        { new: true, runValidators: true }
+      );
+    }
+  
+    async updateMany(filter, data) {
+      return await this.model.updateMany(filter, data);
     }
   
     async deleteById(id) {

@@ -5,39 +5,77 @@ const keys = require('../config/keys');
 const CustomError = require('../utils/customError');
 
 class UserService extends BaseService {
-  constructor(repository) {
-    super(repository);
+  constructor(userRepository) {
+    super(userRepository);
   }
 
   async registerUser(userData) {
-    const { username, password } = userData;
-    let user = await this.repository.findByUsername(username);
-    if (user) {
-      throw new CustomError(`User with username ${username} already exists`, 400);
+    const { username, email, password } = userData;
+
+    let existingUser = await this.repository.findByEmail(email);
+    if (existingUser) {
+      throw new CustomError('User with this email already exists', 400);
     }
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = await this.repository.create({
+
+    existingUser = await this.repository.findByUsername(username);
+    if (existingUser) {
+      throw new CustomError('Username is already taken', 400);
+    }
+
+    const user = await this.repository.create({
       username,
-      password: hashedPassword,
+      email,
+      password
     });
-    const token = jwt.sign({ id: newUser._id }, keys.jwtSecret, {
-      expiresIn: '1d',
-    });
-    return { user: { id: newUser._id, username: newUser.username }, token };
+
+    const token = jwt.sign(
+      { id: user._id },
+      keys.jwtSecret,
+      { expiresIn: '1d' }
+    );
+
+    return {
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      },
+      token
+    };
   }
 
   async loginUser(userData) {
-    const { username, password } = userData;
-    let user = await this.repository.findByUsername(username);
+    const { email, password } = userData;
+
+    const user = await this.repository.findByEmail(email);
     if (!user) {
-      throw new CustomError('Invalid user details', 400);
+      throw new CustomError('Invalid credentials', 401);
     }
-    const isMatch = await bcrypt.compare(password, user.password);
+
+    const isMatch = await user.matchPassword(password);
     if (!isMatch) {
-      throw new CustomError('Wrong password', 400);
+      throw new CustomError('Invalid credentials', 401);
     }
-    const token = jwt.sign({ id: user._id }, keys.jwtSecret, { expiresIn: '1d' });
-    return { user: { id: user._id, username: user.username }, token };
+
+    user.lastLogin = new Date();
+    await user.save({ validateBeforeSave: false }); 
+
+    const token = jwt.sign(
+      { id: user._id },
+      keys.jwtSecret,
+      { expiresIn: '1d' }
+    );
+
+    return {
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      },
+      token
+    };
   }
 
   async getUserById(userId) {
@@ -45,7 +83,13 @@ class UserService extends BaseService {
     if (!user) {
       throw new CustomError('User not found', 404);
     }
-    return user;
+
+    return {
+      id: user._id,
+      username: user.username,
+      email: user.email,
+      role: user.role
+    };
   }
 }
 

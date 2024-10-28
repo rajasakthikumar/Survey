@@ -8,9 +8,10 @@ class QuestionController extends BaseController {
   }
 
   createQuestion = asyncHandler(async (req, res) => {
+    console.log('@!@!@!@!@ Control reaches here');
     const question = await this.service.createQuestion({
       ...req.body,
-      surveyId: req.params.surveyId,
+    //   surveyId: req.params.surveyId,
       createdBy: req.user.id
     });
     res.status(201).json(formatResponse(question));

@@ -39,13 +39,11 @@ const SurveyProgressSchema = new mongoose.Schema({
   ...baseSchemaFields
 }, baseModelOptions);
 
-// Indexes for better query performance
 SurveyProgressSchema.index({ surveyId: 1, respondentId: 1 }, { unique: true });
 SurveyProgressSchema.index({ status: 1 });
 SurveyProgressSchema.index({ completedAt: 1 });
 SurveyProgressSchema.index({ respondentId: 1, status: 1 });
 
-// Update timestamps on status change
 SurveyProgressSchema.pre('save', function(next) {
   if (this.isModified('status')) {
     if (this.status === 'IN_PROGRESS' && !this.startedAt) {
@@ -60,7 +58,6 @@ SurveyProgressSchema.pre('save', function(next) {
   next();
 });
 
-// Methods to check progress status
 SurveyProgressSchema.methods.isCompleted = function() {
   return this.status === 'COMPLETED';
 };

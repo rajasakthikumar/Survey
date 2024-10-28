@@ -1,27 +1,76 @@
 const BaseRepository = require('./baseRepository');
 const Survey = require('../models/survey');
-const mongoose = require('mongoose');
+
 class SurveyRepository extends BaseRepository {
   constructor() {
     super(Survey);
   }
 
-  async findByIdWithQuestions(id) {
-    return await this.model
+  async findByIdWithFullDetails(id) {
+    const survey = await this.model
       .findById(id)
       .populate({
         path: 'questions',
+        select: 'questionText responseType isMandatory order responseValues',
         options: { sort: { order: 1 } }
-      });
+      })
+      .populate({
+        path: 'createdBy',
+        select: 'username email'
+      })
+      .lean(); // Convert to plain JavaScript object
+
+    return survey;
   }
 
   async findAllWithQuestions(filter = {}) {
-    return await this.model
+    const surveys = await this.model
       .find(filter)
       .populate({
         path: 'questions',
+        select: 'questionText responseType isMandatory order responseValues',
         options: { sort: { order: 1 } }
-      });
+      })
+      .sort('-createdAt')
+      .lean(); 
+    return surveys.map(survey => ({
+      id: survey._id,
+      title: survey.title,
+      description: survey.description,
+      isTemplate: survey.isTemplate,
+      isArchived: survey.isArchived,
+      questions: survey.questions || [],
+      questionOrder: survey.questionOrder || [],
+      createdBy: survey.createdBy,
+      createdAt: survey.createdAt,
+      updatedAt: survey.updatedAt,
+      isActive: survey.isActive
+    }));
+  }
+
+  async updateById(id, data) {
+    const survey = await this.model
+      .findByIdAndUpdate(
+        id,
+        data,
+        { 
+          new: true, 
+          runValidators: true 
+        }
+      )
+      .populate({
+        path: 'questions',
+        select: 'questionText responseType isMandatory order responseValues',
+        options: { sort: { order: 1 } }
+      })
+      .lean(); // Convert to plain JavaScript object
+
+    return survey;
+  }
+
+  async create(data) {
+    const survey = await this.model.create(data);
+    return survey.toObject(); // Convert to plain JavaScript object
   }
 }
 
