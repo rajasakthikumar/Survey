@@ -29,7 +29,6 @@ const surveyService = new SurveyService(surveyRepository);
 const questionService = new QuestionService(questionRepository, surveyService);
 surveyService.setQuestionService(questionService);
 
-const answerService = new AnswerService(answerRepository, questionService, surveyService);
 const userService = new UserService(userRepository);
 const surveyProgressService = new SurveyProgressService(
   surveyProgressRepository,
@@ -37,6 +36,7 @@ const surveyProgressService = new SurveyProgressService(
   questionService
 );
 
+const answerService = new AnswerService(answerRepository, questionService, surveyService, surveyProgressService);
 const surveyController = new SurveyController(surveyService);
 const questionController = new QuestionController(questionService);
 const answerController = new AnswerController(answerService);
@@ -178,9 +178,10 @@ class QuestionController extends BaseController {
   }
 
   createQuestion = asyncHandler(async (req, res) => {
+    console.log('@!@!@!@!@ Control reaches here');
     const question = await this.service.createQuestion({
       ...req.body,
-      surveyId: req.params.surveyId,
+    //   surveyId: req.params.surveyId,
       createdBy: req.user.id
     });
     res.status(201).json(formatResponse(question));
@@ -485,19 +486,17 @@ const errorHandler = (err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
 
-  console.error(err);
-
-  if (err.name === 'CastError') {
-    error = new CustomError('Resource not found', 404);
-  }
-
-  if (err.code === 11000) {
-    error = new CustomError('Duplicate field value entered', 400);
+  if (process.env.NODE_ENV === 'test') {
+    console.error('Error details:', error);
   }
 
   if (err.name === 'ValidationError') {
     const message = Object.values(err.errors).map(val => val.message).join(', ');
     error = new CustomError(message, 400);
+  }
+
+  if (err.code === 11000) {
+    error = new CustomError('Survey with this title already exists', 400);
   }
 
   res.status(error.statusCode || 500).json({
@@ -539,30 +538,6 @@ module.exports = {
   authLimiter,
   apiLimiter
 };
-
-File: middleware\validateDocument.js
-----------------------------------------
-const CustomError = require('../utils/customError');
-
-const validateDocument = (Model, filterFunction) => {
-  return async (req, res, next) => {
-    try {
-      const filter = filterFunction(req);
-      const document = await Model.findOne(filter);
-
-      if (!document) {
-        return next(new CustomError('Resource not found', 404));
-      }
-
-      req.document = document;
-      next();
-    } catch (err) {
-      next(err);
-    }
-  };
-};
-
-module.exports = validateDocument;
 
 File: middleware\validation.js
 ----------------------------------------
@@ -788,7 +763,12 @@ const baseModelOptions = {
     }
   },
   toObject: {
-    virtuals: true
+    virtuals: true,
+    transform: function(doc, ret) {
+      delete ret.__v;
+      ret.id = ret._id;
+      delete ret._id;
+    }
   }
 };
 
@@ -847,7 +827,6 @@ const QuestionSchema = new mongoose.Schema({
     enum: ['text', 'multiple-choice', 'single-choice', 'rating', 'boolean'],
     required: [true, 'Please specify the response type']
   },
-  responseValues: [ResponseValueSchema],
   allowMultiple: {
     type: Boolean,
     default: false
@@ -863,20 +842,9 @@ const QuestionSchema = new mongoose.Schema({
   ...baseSchemaFields
 }, baseModelOptions);
 
+// Indexes
 QuestionSchema.index({ surveyId: 1, order: 1 });
 QuestionSchema.index({ createdBy: 1 });
-
-QuestionSchema.pre('save', function(next) {
-  if (this.responseType === 'multiple-choice' || this.responseType === 'single-choice') {
-    if (!this.responseValues || this.responseValues.length === 0) {
-      next(new Error('Response values are required for choice questions'));
-    }
-  } else {
-    this.responseValues = [];
-    this.allowMultiple = false;
-  }
-  next();
-});
 
 module.exports = mongoose.model('Question', QuestionSchema);
 
@@ -968,13 +936,11 @@ const SurveyProgressSchema = new mongoose.Schema({
   ...baseSchemaFields
 }, baseModelOptions);
 
-// Indexes for better query performance
 SurveyProgressSchema.index({ surveyId: 1, respondentId: 1 }, { unique: true });
 SurveyProgressSchema.index({ status: 1 });
 SurveyProgressSchema.index({ completedAt: 1 });
 SurveyProgressSchema.index({ respondentId: 1, status: 1 });
 
-// Update timestamps on status change
 SurveyProgressSchema.pre('save', function(next) {
   if (this.isModified('status')) {
     if (this.status === 'IN_PROGRESS' && !this.startedAt) {
@@ -989,7 +955,6 @@ SurveyProgressSchema.pre('save', function(next) {
   next();
 });
 
-// Methods to check progress status
 SurveyProgressSchema.methods.isCompleted = function() {
   return this.status === 'COMPLETED';
 };
@@ -1020,17 +985,16 @@ const UserSchema = new mongoose.Schema({
     required: [true, 'Please add an email'],
     unique: true,
     trim: true,
-    lowercase: true,
     match: [
-      /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
-      'Please add a valid email'
+      /^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/,
+      'Please enter a valid email'
     ]
   },
   password: {
     type: String,
     required: [true, 'Please add a password'],
     minlength: [6, 'Password must be at least 6 characters long'],
-    select: false
+    select: false // Don't include password by default in queries
   },
   role: {
     type: String,
@@ -1042,17 +1006,28 @@ const UserSchema = new mongoose.Schema({
   }
 }, baseModelOptions);
 
+// Hash password only when it's modified
 UserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) {
     return next();
   }
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
-  next();
+  
+  try {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
+// Method to compare passwords
 UserSchema.methods.matchPassword = async function(enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password);
+  try {
+    return await bcrypt.compare(enteredPassword, this.password);
+  } catch (error) {
+    throw new Error('Error comparing passwords');
+  }
 };
 
 module.exports = mongoose.model('User', UserSchema);
@@ -1101,6 +1076,18 @@ class BaseRepository {
       return await this.model.findOne(filter).populate(populate);
     }
   
+    async find(filter = {}, options = {}) {
+      const { sort = {}, populate = '', select = '', limit = 0, skip = 0 } = options;
+      return await this.model
+        .find(filter)
+        .sort(sort)
+        .populate(populate)
+        .select(select)
+        .limit(limit)
+        .skip(skip)
+        .lean();
+    }
+  
     async findAll(filter = {}, options = {}) {
       const { sort = {}, populate = '', limit = 0, skip = 0 } = options;
       return await this.model
@@ -1108,7 +1095,8 @@ class BaseRepository {
         .sort(sort)
         .populate(populate)
         .limit(limit)
-        .skip(skip);
+        .skip(skip)
+        .lean();
     }
   
     async updateById(id, data) {
@@ -1117,6 +1105,18 @@ class BaseRepository {
         data,
         { new: true, runValidators: true }
       );
+    }
+  
+    async updateOne(filter, data) {
+      return await this.model.findOneAndUpdate(
+        filter,
+        data,
+        { new: true, runValidators: true }
+      );
+    }
+  
+    async updateMany(filter, data) {
+      return await this.model.updateMany(filter, data);
     }
   
     async deleteById(id) {
@@ -1174,30 +1174,68 @@ module.exports = QuestionRepository;
 
 File: repositories\survey.js
 ----------------------------------------
+// repositories/survey.js
 const BaseRepository = require('./baseRepository');
 const Survey = require('../models/survey');
-const mongoose = require('mongoose');
+
 class SurveyRepository extends BaseRepository {
   constructor() {
     super(Survey);
   }
 
-  async findByIdWithQuestions(id) {
-    return await this.model
-      .findById(id)
-      .populate({
-        path: 'questions',
-        options: { sort: { order: 1 } }
-      });
+  async findByIdWithFullDetails(id) {
+    try {
+      const survey = await this.model.findById(id);
+      if (!survey) {
+        return null;
+      }
+
+      const populatedSurvey = await this.model
+        .findById(id)
+        .populate({
+          path: 'questions',
+          select: 'questionText responseType isMandatory order responseValues',
+          options: { sort: { order: 1 } }
+        })
+        .populate({
+          path: 'createdBy',
+          select: 'username email'
+        })
+        .lean();
+
+      return populatedSurvey;
+    } catch (error) {
+      console.error('Error in findByIdWithFullDetails:', error);
+      throw error;
+    }
   }
 
   async findAllWithQuestions(filter = {}) {
-    return await this.model
+    const surveys = await this.model
       .find(filter)
       .populate({
         path: 'questions',
+        select: 'questionText responseType isMandatory order responseValues',
         options: { sort: { order: 1 } }
-      });
+      })
+      .lean();
+
+    return surveys;
+  }
+
+  async updateById(id, data) {
+    return await this.model
+      .findByIdAndUpdate(
+        id,
+        data,
+        { new: true, runValidators: true }
+      )
+      .lean();
+  }
+
+  async create(data) {
+    const survey = await this.model.create(data);
+    return survey.toObject();
   }
 }
 
@@ -1248,7 +1286,13 @@ class SurveyProgressRepository extends BaseRepository {
     if (progress.status === 'NOT_STARTED') {
       progress.status = 'IN_PROGRESS';
     }
-
+    //to check if all the questions have been answered in the survey
+    if(progress.answeredQuestions.length === survey.questions.length) {
+      progress.status = 'COMPLETED';
+      progress.completedAt = new Date();  
+    }
+//to compute the current progress of the survey
+    progress.progress = (progress.answeredQuestions.length / survey.questions.length) * 100;
     return await progress.save();
   }
 
@@ -1286,7 +1330,24 @@ class SurveyProgressRepository extends BaseRepository {
   }
 
   async getSurveyParticipants(surveyId, filters = {}) {
-    const query = { surveyId, ...filters };
+
+    
+    const query = { surveyId };
+
+    if (filters.status) {
+      query.status = filters.status;  
+    }
+
+    if (filters.minProgress) {
+      query.progress = { $gte: Number(filters.minProgress) };
+    }
+
+    if (filters.startDate && filters.endDate) {
+      query.startedAt = {
+        $gte: new Date(filters.startDate),
+        $lte: new Date(filters.endDate)
+      };
+    }
     
     return await this.model
       .find(query)
@@ -1295,11 +1356,10 @@ class SurveyProgressRepository extends BaseRepository {
       .sort('-updatedAt');
   }
 
-  async getRespondentProgress(respondentId, filters = {}) {
-    const query = { respondentId, ...filters };
+  async getRespondentProgress(respondentId) {
 
     return await this.model
-      .find(query)
+      .find(respondentId)
       .populate('surveyId', 'title description')
       .sort('-updatedAt');
   }
@@ -1342,40 +1402,33 @@ const { answerController } = require('../bootstrap');
 const auth = require('../middleware/auth');
 const { validateAnswer } = require('../middleware/validation');
 
-router.use(auth); // Apply auth middleware to all routes
-
-// Submit an answer for a question
+router.use(auth); 
 router.post(
   '/questions/:questionId',
   validateAnswer,
   answerController.submitAnswer
 );
 
-// Get all answers for a survey
 router.get(
   '/surveys/:surveyId',
   answerController.getAnswersBySurvey
 );
 
-// Get current user's answers for a survey
 router.get(
   '/surveys/:surveyId/my-answers',
   answerController.getMyAnswers
 );
 
-// Get all answers for a specific question
 router.get(
   '/questions/:questionId',
   answerController.getAnswersByQuestion
 );
 
-// Get answer statistics for a survey
 router.get(
   '/surveys/:surveyId/stats',
   answerController.getSurveyStats
 );
 
-// Delete an answer (only by answer creator or admin)
 router.delete(
   '/:answerId',
   answerController.deleteAnswer
@@ -1398,7 +1451,7 @@ const checkOwnership = require('../middleware/checkOwnership');
 router.use(auth);
 
 router.route('/')
-  .post(validateQuestion, questionController.create);
+  .post(validateQuestion, questionController.createQuestion);
 
 router.route('/:id')
   .get(questionController.getById)
@@ -1436,6 +1489,7 @@ router.route('/:id')
   .put(checkOwnership('Survey'), validateSurveyUpdate, surveyController.update)
   .delete(checkOwnership('Survey'), surveyController.delete);
 
+router.get('/:id',surveyController.getById)
 router.post('/:id/duplicate', surveyController.duplicateSurvey);
 router.put('/:id/archive', checkOwnership('Survey'), surveyController.archiveSurvey);
 router.put('/:id/unarchive', checkOwnership('Survey'), surveyController.unarchiveSurvey);
@@ -1457,37 +1511,31 @@ const auth = require('../middleware/auth');
 
 router.use(auth);
 
-// Initialize progress for a survey
 router.post(
   '/surveys/:surveyId/initialize',
   surveyProgressController.initializeProgress
 );
 
-// Update progress after answering a question
 router.put(
   '/surveys/:surveyId/questions/:questionId',
   surveyProgressController.updateProgress
 );
 
-// Get progress for a specific survey
 router.get(
   '/surveys/:surveyId',
   surveyProgressController.getProgress
 );
 
-// Get all participants for a survey
 router.get(
   '/surveys/:surveyId/participants',
   surveyProgressController.getParticipants
 );
 
-// Get completion statistics for a survey
 router.get(
   '/surveys/:surveyId/stats',
   surveyProgressController.getCompletionStats
 );
 
-// Get current user's progress across all surveys
 router.get(
   '/my-progress',
   surveyProgressController.getMyProgress
@@ -1508,7 +1556,7 @@ const {
 
 router.post('/register', validateUserRegister, userController.registerUser);
 router.post('/login', validateUserLogin, userController.loginUser);
-router.get('/me', auth, userController.getCurrentUser);
+router.get('/current', auth, userController.getCurrentUser);
 
 module.exports = router;
 
@@ -1569,331 +1617,81 @@ try {
 
 File: service\answer.js
 ----------------------------------------
-// services/answer.js
 const BaseService = require('./baseService');
 const CustomError = require('../utils/customError');
 
 class AnswerService extends BaseService {
-  constructor(answerRepository, questionService, surveyService) {
+  constructor(answerRepository, questionService, surveyService, surveyProgressService) {
     super(answerRepository);
     this.questionService = questionService;
     this.surveyService = surveyService;
+    this.surveyProgressService = surveyProgressService; 
   }
 
   async createAnswer(data) {
-    const question = await this.questionService.findById(data.questionId);
-    if (!question) {
-      throw new CustomError('Question not found', 404);
-    }
-
-    await this.questionService.validateQuestionType(question._id, data.answerValue);
-
-    // Check if answer already exists
-    const existingAnswer = await this.repository.findOne({
-      questionId: data.questionId,
-      respondentId: data.respondentId
-    });
-
-    if (existingAnswer) {
-      throw new CustomError('Answer already exists for this question', 400);
-    }
-
-    const answer = await this.create({
-      ...data,
-      surveyId: question.surveyId,
-      isValid: true,
-      validatedAt: new Date()
-    });
-
-    return answer;
-  }
-
-  async getAnswersBySurvey(surveyId, userId) {
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
-    }
-
-    // Only creator and admin can see all answers
-    if (survey.createdBy.toString() !== userId && userId.role !== 'admin') {
-      throw new CustomError('Not authorized to view all answers', 403);
-    }
-
-    return await this.repository.findBySurveyAndRespondent(surveyId);
-  }
-
-  async getAnswersByQuestion(questionId) {
-    const question = await this.questionService.findById(questionId);
-    if (!question) {
-      throw new CustomError('Question not found', 404);
-    }
-
-    return await this.repository.findQuestionAnswers(questionId);
-  }
-
-  async getRespondentAnswers(surveyId, respondentId) {
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
-    }
-
-    return await this.repository.findBySurveyAndRespondent(surveyId, respondentId);
-  }
-
-  async getSurveyStats(surveyId) {
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
-    }
-
-    const answers = await this.repository.findAll({ surveyId });
-    const questionStats = {};
-
-    answers.forEach(answer => {
-      if (!questionStats[answer.questionId]) {
-        questionStats[answer.questionId] = {
-          totalAnswers: 0,
-          answerDistribution: {}
-        };
+    try {
+      const question = await this.questionService.getQuestionById(data.questionId);
+      if (!question) {
+        throw new CustomError('Question not found', 404);
       }
 
-      questionStats[answer.questionId].totalAnswers++;
+      await this.validateAnswer(question, data.answerValue);
 
-      const value = Array.isArray(answer.answerValue) ? 
-        answer.answerValue.join(', ') : 
-        answer.answerValue.toString();
-
-      questionStats[answer.questionId].answerDistribution[value] = 
-        (questionStats[answer.questionId].answerDistribution[value] || 0) + 1;
-    });
-
-    return questionStats;
-  }
-
-  async deleteAnswer(answerId, userId, userRole) {
-    const answer = await this.findById(answerId);
-    if (!answer) {
-      throw new CustomError('Answer not found', 404);
-    }
-
-    // Only answer creator or admin can delete
-    if (answer.respondentId.toString() !== userId && userRole !== 'admin') {
-      throw new CustomError('Not authorized to delete this answer', 403);
-    }
-
-    return await this.deleteById(answerId);
-  }
-}
-
-module.exports = AnswerService;
-
-File: service\baseService.js
-----------------------------------------
-const CustomError = require('../utils/customError');
-
-class BaseService {
-  constructor(repository) {
-    this.repository = repository;
-  }
-
-  async create(data) {
-    return await this.repository.create(data);
-  }
-
-  async findById(id, populate = '') {
-    const item = await this.repository.findById(id, populate);
-    if (!item) {
-      throw new CustomError('Resource not found', 404);
-    }
-    return item;
-  }
-
-  async findAll(filter = {}, options = {}) {
-    return await this.repository.findAll(filter, options);
-  }
-
-  async updateById(id, data) {
-    const item = await this.repository.updateById(id, data);
-    if (!item) {
-      throw new CustomError('Resource not found', 404);
-    }
-    return item;
-  }
-
-  async deleteById(id) {
-    const item = await this.repository.deleteById(id);
-    if (!item) {
-      throw new CustomError('Resource not found', 404);
-    }
-    return item;
-  }
-}
-
-module.exports = BaseService;
-
-File: service\question.js
-----------------------------------------
-const BaseService = require('./baseService');
-const CustomError = require('../utils/customError');
-
-class QuestionService extends BaseService {
-  constructor(questionRepository, surveyService) {
-    super(questionRepository);
-    this.surveyService = surveyService;
-  }
-
-  async createQuestion(data) {
-    const maxOrder = await this.repository.getMaxOrder(data.surveyId);
-    const questionData = {
-      ...data,
-      order: maxOrder + 1
-    };
-
-    const question = await this.create(questionData);
-
-    await this.surveyService.addQuestionToSurvey(question.surveyId, question._id);
-
-    return question;
-  }
-
-  async getQuestionById(questionId) {
-    const question = await this.findById(questionId);
-    if (!question) {
-      throw new CustomError('Question not found', 404);
-    }
-    return question;
-  }
-
-  async updateQuestion(questionId, data) {
-    const question = await this.findById(questionId);
-    if (!question) {
-      throw new CustomError('Question not found', 404);
-    }
-
-    if (data.responseValues && 
-        (question.responseType === 'multiple-choice' || 
-         question.responseType === 'single-choice')) {
-      if (data.responseValues.length < 2) {
-        throw new CustomError('Choice questions must have at least 2 options', 400);
-      }
-      data.responseValues = data.responseValues.map((value, index) => ({
-        value,
-        order: index
-      }));
-    }
-
-    const updateData = {
-      ...data,
-      responseType: undefined,
-      surveyId: undefined,
-      order: undefined
-    };
-
-    return await this.updateById(questionId, updateData);
-  }
-
-  async deleteQuestion(questionId) {
-    const question = await this.findById(questionId);
-    if (!question) {
-      throw new CustomError('Question not found', 404);
-    }
-
-    await this.surveyService.removeQuestionFromSurvey(question.surveyId, questionId);
-
-    await this.deleteById(questionId);
-
-    await this.reorderQuestionsAfterDelete(question.surveyId, question.order);
-
-    return question;
-  }
-
-  async deleteQuestionsBySurveyId(surveyId) {
-    const questions = await this.findAll({ surveyId });
-    for (const question of questions) {
-      await this.deleteById(question._id);
-    }
-  }
-
-  async moveQuestion(surveyId, questionId, direction) {
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
-    }
-
-    const question = await this.findById(questionId);
-    if (!question) {
-      throw new CustomError('Question not found', 404);
-    }
-
-    const currentOrder = question.order;
-    const questions = await this.findAll({ 
-      surveyId, 
-      order: direction === 'up' ? currentOrder - 1 : currentOrder + 1 
-    });
-
-    if (questions.length === 0) {
-      throw new CustomError(`Cannot move question ${direction}`, 400);
-    }
-
-    const otherQuestion = questions[0];
-
-    await this.updateById(question._id, { order: otherQuestion.order });
-    await this.updateById(otherQuestion._id, { order: currentOrder });
-
-    const updatedQuestions = await this.findAll(
-      { surveyId }, 
-      { sort: { order: 1 } }
-    );
-    
-    await this.surveyService.reorderQuestions(
-      surveyId,
-      updatedQuestions.map(q => q._id)
-    );
-
-    return await this.surveyService.findById(surveyId);
-  }
-
-  async reorderQuestionsAfterDelete(surveyId, deletedOrder) {
-    const questionsToReorder = await this.findAll({
-      surveyId,
-      order: { $gt: deletedOrder }
-    });
-
-    for (const question of questionsToReorder) {
-      await this.updateById(question._id, {
-        order: question.order - 1
+      const existingAnswer = await this.repository.findOne({
+        questionId: data.questionId,
+        respondentId: data.respondentId
       });
+
+      if (existingAnswer) {
+        throw new CustomError('Answer already exists for this question', 400);
+      }
+
+      const answer = await this.create({
+        ...data,
+        surveyId: question.surveyId,
+        isValid: true,
+        validatedAt: new Date()
+      });
+
+      await this.updateSurveyProgress(
+        question.surveyId,
+        data.respondentId,
+        question._id
+      );
+
+      return answer;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error creating answer', 500);
     }
   }
 
-  async duplicateQuestion(questionId, newSurveyId, userId) {
-    const originalQuestion = await this.findById(questionId);
-    if (!originalQuestion) {
-      throw new CustomError('Question not found', 404);
+  async updateSurveyProgress(surveyId, respondentId, questionId) {
+    try {
+      let progress = await this.surveyProgressService.findBySurveyAndRespondent(
+        surveyId,
+        respondentId
+      );
+
+      if (!progress) {
+        progress = await this.surveyProgressService.initializeProgress(
+          surveyId,
+          respondentId
+        );
+      }
+
+      await this.surveyProgressService.updateProgress(
+        surveyId,
+        respondentId,
+        questionId
+      );
+
+    } catch (error) {
+      throw new CustomError('Error updating survey progress', 500);
     }
-
-    const maxOrder = await this.repository.getMaxOrder(newSurveyId);
-
-    const questionData = {
-      surveyId: newSurveyId,
-      questionText: originalQuestion.questionText,
-      responseType: originalQuestion.responseType,
-      responseValues: originalQuestion.responseValues,
-      allowMultiple: originalQuestion.allowMultiple,
-      isMandatory: originalQuestion.isMandatory,
-      order: maxOrder + 1,
-      createdBy: userId
-    };
-
-    return await this.create(questionData);
   }
 
-  async validateQuestionType(questionId, answerValue) {
-    const question = await this.findById(questionId);
-    if (!question) {
-      throw new CustomError('Question not found', 404);
-    }
-
+  async validateAnswer(question, answerValue) {
     switch (question.responseType) {
       case 'text':
         if (typeof answerValue !== 'string') {
@@ -1943,6 +1741,661 @@ class QuestionService extends BaseService {
 
     return true;
   }
+
+  async getAnswersBySurvey(surveyId, userId) {
+    try {
+      const survey = await this.surveyService.getSurveyById(surveyId);
+      if (!survey) {
+        throw new CustomError('Survey not found', 404);
+      }
+
+      if (survey.createdBy.toString() !== userId && userId.role !== 'admin') {
+        throw new CustomError('Not authorized to view all answers', 403);
+      }
+
+      return await this.repository.findBySurveyAndRespondent(surveyId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error retrieving answers', 500);
+    }
+  }
+
+  async getAnswersByQuestion(questionId) {
+    try {
+      const question = await this.questionService.getQuestionById(questionId);
+      if (!question) {
+        throw new CustomError('Question not found', 404);
+      }
+
+      return await this.repository.findQuestionAnswers(questionId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error retrieving answers', 500);
+    }
+  }
+
+  async getRespondentAnswers(surveyId, respondentId) {
+    try {
+      const survey = await this.surveyService.getSurveyById(surveyId);
+      if (!survey) {
+        throw new CustomError('Survey not found', 404);
+      }
+
+      return await this.repository.findBySurveyAndRespondent(surveyId, respondentId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error retrieving answers', 500);
+    }
+  }
+
+  async getSurveyStats(surveyId) {
+    try {
+      const survey = await this.surveyService.getSurveyById(surveyId);
+      if (!survey) {
+        throw new CustomError('Survey not found', 404);
+      }
+
+      const answers = await this.repository.findAll({ surveyId });
+      const questionStats = {};
+
+      answers.forEach(answer => {
+        if (!questionStats[answer.questionId]) {
+          questionStats[answer.questionId] = {
+            totalAnswers: 0,
+            answerDistribution: {}
+          };
+        }
+
+        questionStats[answer.questionId].totalAnswers++;
+
+        const value = Array.isArray(answer.answerValue) 
+          ? answer.answerValue.join(', ') 
+          : answer.answerValue.toString();
+
+        questionStats[answer.questionId].answerDistribution[value] = 
+          (questionStats[answer.questionId].answerDistribution[value] || 0) + 1;
+      });
+
+      return questionStats;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error getting survey statistics', 500);
+    }
+  }
+
+  async deleteAnswer(answerId, userId, userRole) {
+    try {
+      const answer = await this.findById(answerId);
+      if (!answer) {
+        throw new CustomError('Answer not found', 404);
+      }
+
+      // Only answer creator or admin can delete
+      if (answer.respondentId.toString() !== userId && userRole !== 'admin') {
+        throw new CustomError('Not authorized to delete this answer', 403);
+      }
+
+      return await this.deleteById(answerId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error deleting answer', 500);
+    }
+  }
+}
+
+module.exports = AnswerService;
+
+File: service\baseService.js
+----------------------------------------
+// service/baseService.js
+const CustomError = require('../utils/customError');
+const mongoose = require('mongoose');
+
+class BaseService {
+  constructor(repository) {
+    this.repository = repository;
+  }
+
+  async create(data) {
+    try {
+      const item = await this.repository.create(data);
+      if (!item) {
+        throw new CustomError('Failed to create resource', 400);
+      }
+      return item;
+    } catch (error) {
+      if (error.code === 11000) {
+        throw new CustomError('Resource with this identifier already exists', 400);
+      }
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error creating resource: ${error.message}`, 500);
+    }
+  }
+
+  async findById(id, populate = '') {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new CustomError('Invalid ID format', 400);
+      }
+
+      const item = await this.repository.findById(id, populate);
+      if (!item) {
+        throw new CustomError('Resource not found', 404);
+      }
+      return item;
+    } catch (error) {
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error retrieving resource: ${error.message}`, 500);
+    }
+  }
+
+  async findAll(filter = {}, options = {}) {
+    try {
+      const items = await this.repository.findAll(filter, options);
+      return items;
+    } catch (error) {
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error retrieving resources: ${error.message}`, 500);
+    }
+  }
+
+  async updateById(id, data) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new CustomError('Invalid ID format', 400);
+      }
+
+      const item = await this.repository.updateById(id, data);
+      if (!item) {
+        throw new CustomError('Resource not found', 404);
+      }
+      return item;
+    } catch (error) {
+      if (error.code === 11000) {
+        throw new CustomError('Resource with this identifier already exists', 400);
+      }
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error updating resource: ${error.message}`, 500);
+    }
+  }
+
+  async deleteById(id) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new CustomError('Invalid ID format', 400);
+      }
+
+      const item = await this.repository.deleteById(id);
+      if (!item) {
+        throw new CustomError('Resource not found', 404);
+      }
+      return item;
+    } catch (error) {
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error deleting resource: ${error.message}`, 500);
+    }
+  }
+
+  async findOne(filter = {}, populate = '') {
+    try {
+      const item = await this.repository.findOne(filter, populate);
+      if (!item) {
+        throw new CustomError('Resource not found', 404);
+      }
+      return item;
+    } catch (error) {
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error finding resource: ${error.message}`, 500);
+    }
+  }
+
+  async count(filter = {}) {
+    try {
+      return await this.repository.count(filter);
+    } catch (error) {
+      throw new CustomError(`Error counting resources: ${error.message}`, 500);
+    }
+  }
+
+  async exists(filter = {}) {
+    try {
+      const count = await this.repository.count(filter);
+      return count > 0;
+    } catch (error) {
+      throw new CustomError(`Error checking resource existence: ${error.message}`, 500);
+    }
+  }
+
+  async findOneOrCreate(filter = {}, data = {}) {
+    try {
+      let item = await this.repository.findOne(filter);
+      if (!item) {
+        item = await this.repository.create({ ...data, ...filter });
+      }
+      return item;
+    } catch (error) {
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error finding or creating resource: ${error.message}`, 500);
+    }
+  }
+
+  async updateOne(filter = {}, data) {
+    try {
+      const item = await this.repository.updateOne(filter, data);
+      if (!item) {
+        throw new CustomError('Resource not found', 404);
+      }
+      return item;
+    } catch (error) {
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error updating resource: ${error.message}`, 500);
+    }
+  }
+
+  async deleteOne(filter = {}) {
+    try {
+      const item = await this.repository.deleteOne(filter);
+      if (!item) {
+        throw new CustomError('Resource not found', 404);
+      }
+      return item;
+    } catch (error) {
+      if (error instanceof CustomError) {
+        throw error;
+      }
+      throw new CustomError(`Error deleting resource: ${error.message}`, 500);
+    }
+  }
+}
+
+module.exports = BaseService;
+
+File: service\question.js
+----------------------------------------
+const BaseService = require('./baseService');
+const CustomError = require('../utils/customError');
+const mongoose = require('mongoose');
+
+class QuestionService extends BaseService {
+  constructor(questionRepository, surveyService) {
+    super(questionRepository);
+    this.surveyService = surveyService;
+  }
+
+  async createQuestion(data) {
+    try {
+
+      if (!data.surveyId) {
+        throw new CustomError('Survey ID is required', 400);
+      }      
+
+      const survey = await this.surveyService.getSurveyById(data.surveyId);
+      if (!survey) {
+        throw new CustomError('Survey not found', 404);
+      }
+
+      const maxOrder = await this.getMaxQuestionOrder(data.surveyId);
+      
+      const questionData = {
+        questionText: data.questionText,
+        responseType: data.responseType,
+        isMandatory: data.isMandatory,
+        surveyId: data.surveyId,
+        order: maxOrder + 1,
+        createdBy: data.createdBy
+      };
+
+      if (['multiple-choice', 'single-choice'].includes(data.responseType)) {
+        questionData.responseValues = data.responseValues;
+        questionData.allowMultiple = data.allowMultiple || false;
+      }
+
+
+      const question = await this.repository.create(questionData);
+
+      if (question._id) {
+        await this.surveyService.addQuestionToSurvey(data.surveyId, question._id);
+      }
+
+      return question;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError(`Error creating question: ${error.message}`, 500);
+    }
+  }
+
+  async getMaxQuestionOrder(surveyId) {
+    try {
+      const questions = await this.repository.find(
+        { surveyId },
+        { 
+          sort: { order: -1 },
+          limit: 1
+        }
+      );
+      return questions.length > 0 ? questions[0].order : 0;
+    } catch (error) {
+      console.error('Error getting max order:', error);
+      return 0;
+    }
+  }
+
+  async getQuestionById(id) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new CustomError('Invalid question ID', 400);
+      }
+
+      const question = await this.repository.findById(id);
+      if (!question) {
+        throw new CustomError('Question not found', 404);
+      }
+
+      return question;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error retrieving question', 500);
+    }
+  }
+
+  async getMaxQuestionOrder(surveyId) {
+    try {
+      const questions = await this.repository.find(
+        { surveyId },
+        { 
+          sort: { order: -1 },
+          limit: 1,
+          select: 'order'
+        }
+      );
+      return questions.length > 0 ? questions[0].order : 0;
+    } catch (error) {
+      throw new CustomError('Error getting max question order', 500);
+    }
+  }
+
+  async getQuestionsBySurvey(surveyId) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(surveyId)) {
+        throw new CustomError('Invalid survey ID', 400);
+      }
+
+      return await this.repository.find(
+        { surveyId },
+        { 
+          sort: { order: 1 },
+          select: '-__v'
+        }
+      );
+    } catch (error) {
+      throw new CustomError('Error getting survey questions', 500);
+    }
+  }
+
+  async updateQuestion(id, data) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new CustomError('Invalid question ID', 400);
+      }
+
+      const question = await this.getQuestionById(id);
+
+      const updateData = {
+        ...data,
+        surveyId: undefined,
+        order: undefined,
+        responseType: undefined 
+      };
+
+      if (updateData.responseValues) {
+        await this.validateResponseValues(question.responseType, updateData.responseValues);
+      }
+
+      const updatedQuestion = await this.repository.updateById(id, updateData);
+      if (!updatedQuestion) {
+        throw new CustomError('Question not found', 404);
+      }
+
+      return updatedQuestion;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error updating question', 500);
+    }
+  }
+
+  async deleteQuestion(id) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        throw new CustomError('Invalid question ID', 400);
+      }
+
+      const question = await this.getQuestionById(id);
+      
+      await this.repository.deleteById(id);
+
+      const remainingQuestions = await this.getQuestionsBySurvey(question.surveyId);
+      await this.reorderSurveyQuestions(
+        question.surveyId,
+        remainingQuestions.map(q => q._id)
+      );
+
+      await this.surveyService.removeQuestionFromSurvey(question.surveyId, id);
+
+      return { success: true, message: 'Question deleted successfully' };
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error deleting question', 500);
+    }
+  }
+
+  async reorderSurveyQuestions(surveyId, questionOrder) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(surveyId)) {
+        throw new CustomError('Invalid survey ID', 400);
+      }
+
+      const questions = await this.getQuestionsBySurvey(surveyId);
+      const existingIds = new Set(questions.map(q => q._id.toString()));
+      
+      const validOrder = questionOrder.every(id => existingIds.has(id.toString()));
+      if (!validOrder) {
+        throw new CustomError('Invalid question order provided', 400);
+      }
+
+      const bulkOps = questionOrder.map((questionId, index) => ({
+        updateOne: {
+          filter: { _id: questionId, surveyId },
+          update: { $set: { order: index } }
+        }
+      }));
+
+      await this.repository.bulkWrite(bulkOps);
+      return await this.getQuestionsBySurvey(surveyId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error reordering questions', 500);
+    }
+  }
+
+  async moveQuestion(surveyId, questionId, direction) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(surveyId) || 
+          !mongoose.Types.ObjectId.isValid(questionId)) {
+        throw new CustomError('Invalid survey or question ID', 400);
+      }
+
+      const question = await this.getQuestionById(questionId);
+      
+      const nearQuestion = await this.repository.findOne({
+        surveyId,
+        order: direction === 'up' ? question.order - 1 : question.order + 1
+      });
+
+      if (!nearQuestion) {
+        throw new CustomError(`Cannot move question ${direction}`, 400);
+      }
+
+      const tempOrder = question.order;
+      await this.repository.updateById(question._id, { order: nearQuestion.order });
+      await this.repository.updateById(nearQuestion._id, { order: tempOrder });
+
+      return await this.getQuestionsBySurvey(surveyId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error moving question', 500);
+    }
+  }
+
+  async duplicateQuestion(questionId, newSurveyId, userId) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(questionId) || 
+          !mongoose.Types.ObjectId.isValid(newSurveyId)) {
+        throw new CustomError('Invalid question or survey ID', 400);
+      }
+
+      const originalQuestion = await this.getQuestionById(questionId);
+      const maxOrder = await this.getMaxQuestionOrder(newSurveyId);
+
+      const questionData = {
+        surveyId: newSurveyId,
+        questionText: originalQuestion.questionText,
+        responseType: originalQuestion.responseType,
+        responseValues: originalQuestion.responseValues,
+        allowMultiple: originalQuestion.allowMultiple,
+        isMandatory: originalQuestion.isMandatory,
+        order: maxOrder + 1,
+        createdBy: userId
+      };
+
+      return await this.repository.create(questionData);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error duplicating question', 500);
+    }
+  }
+
+  async validateQuestionData(data) {
+    const validTypes = ['text', 'multiple-choice', 'single-choice', 'rating', 'boolean'];
+    if (!validTypes.includes(data.responseType)) {
+      throw new CustomError('Invalid question type', 400);
+    }
+
+    await this.validateResponseValues(data.responseType, data.responseValues);
+
+    if (data.responseType !== 'multiple-choice' && data.allowMultiple) {
+      throw new CustomError('allowMultiple can only be true for multiple-choice questions', 400);
+    }
+
+    return true;
+  }
+
+  async validateResponseValues(responseType, responseValues) {
+    switch (responseType) {
+      case 'multiple-choice':
+      case 'single-choice':
+        if (!Array.isArray(responseValues) || responseValues.length < 2) {
+          throw new CustomError('Choice questions must have at least 2 options', 400);
+        }
+        break;
+
+      case 'rating':
+        if (responseValues !== undefined) {
+          throw new CustomError('Rating questions cannot have response values', 400);
+        }
+        break;
+
+      case 'boolean':
+        if (responseValues !== undefined) {
+          throw new CustomError('Boolean questions cannot have response values', 400);
+        }
+        break;
+
+      case 'text':
+        if (responseValues !== undefined) {
+          throw new CustomError('Text questions cannot have response values', 400);
+        }
+        break;
+
+      default:
+        throw new CustomError('Invalid question type', 400);
+    }
+
+    return true;
+  }
+
+  async validateQuestionResponse(questionId, answerValue) {
+    try {
+      const question = await this.getQuestionById(questionId);
+      
+      switch (question.responseType) {
+        case 'text':
+          if (typeof answerValue !== 'string') {
+            throw new CustomError('Answer must be a text value', 400);
+          }
+          break;
+
+        case 'multiple-choice':
+          if (!Array.isArray(answerValue)) {
+            throw new CustomError('Answer must be an array for multiple-choice questions', 400);
+          }
+          if (!question.allowMultiple && answerValue.length > 1) {
+            throw new CustomError('Multiple selections not allowed for this question', 400);
+          }
+          const validValues = question.responseValues.map(rv => rv.value);
+          const invalidValues = answerValue.filter(v => !validValues.includes(v));
+          if (invalidValues.length > 0) {
+            throw new CustomError(`Invalid options selected: ${invalidValues.join(', ')}`, 400);
+          }
+          break;
+
+        case 'single-choice':
+          if (Array.isArray(answerValue)) {
+            throw new CustomError('Single choice question cannot have multiple answers', 400);
+          }
+          if (!question.responseValues.some(rv => rv.value === answerValue)) {
+            throw new CustomError('Invalid option selected', 400);
+          }
+          break;
+
+        case 'rating':
+          const rating = Number(answerValue);
+          if (isNaN(rating) || rating < 1 || rating > 5) {
+            throw new CustomError('Rating must be a number between 1 and 5', 400);
+          }
+          break;
+
+        case 'boolean':
+          if (typeof answerValue !== 'boolean') {
+            throw new CustomError('Answer must be true or false', 400);
+          }
+          break;
+
+        default:
+          throw new CustomError('Invalid question type', 400);
+      }
+
+      return true;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error validating question response', 500);
+    }
+  }
 }
 
 module.exports = QuestionService;
@@ -1951,123 +2404,363 @@ File: service\survey.js
 ----------------------------------------
 const BaseService = require('./baseService');
 const CustomError = require('../utils/customError');
+const mongoose = require('mongoose');
 
 class SurveyService extends BaseService {
-    constructor(surveyRepository) {
-      super(surveyRepository);
-      this._questionService = null;
-    }
+  constructor(surveyRepository) {
+    super(surveyRepository);
+    this._questionService = null;
+  }
+
+  setQuestionService(questionService) {
+    this._questionService = questionService;
+  }
+
+  async createSurvey(data) {
+    try {
+      if (!data.title) {
+        throw new CustomError('Title is required', 400); 
+      }
   
-    setQuestionService(questionService) {
-      this._questionService = questionService;
-    }
+      const existingSurvey = await this.repository.findOne({ 
+        title: data.title 
+      });
   
-    async createSurvey(data) {
+      if (existingSurvey) {
+        throw new CustomError('Survey with this title already exists', 400);
+      }
+  
       const survey = await this.create({
         ...data,
         questions: [],
-        questionOrder: []
+        questionOrder: [],
+        isArchived: false,
+        archivedAt: null
       });
-      return survey;
-    }
   
-    async getSurveyById(id) {
-      const survey = await this.repository.findByIdWithQuestions(id);
+      return await this.getSurveyById(survey.id);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error creating survey', 500); // Changed status to 500 for internal errors
+    }
+  }
+  
+
+  async getSurveyById(id) {
+    try {
+        console.log('@!@!@!@! ')
+      
+
+      const survey = await this.repository.findByIdWithFullDetails(id);
+      console.log('@!@!@!@! Found survey:', survey); 
       if (!survey) {
         throw new CustomError('Survey not found', 404);
       }
       return survey;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error retrieving survey', 400);
     }
+  }
+
+  async getAllSurveys(filter = {}) {
+    try {
+      if (filter.isArchived !== undefined) {
+        filter.isArchived = filter.isArchived === 'true';
+      }
   
-    async getAllSurveys(filter = {}) {
-      return await this.repository.findAllWithQuestions(filter);
+      const surveys = await this.repository.findAllWithQuestions(filter);
+      return surveys.map(survey => ({
+        id: survey.id || survey._id,
+        title: survey.title,
+        description: survey.description,
+        isTemplate: survey.isTemplate,
+        isArchived: survey.isArchived,
+        questions: Array.isArray(survey.questions) ? survey.questions.map(q => ({
+          id: q.id || q._id,
+          questionText: q.questionText,
+          responseType: q.responseType,
+          isMandatory: q.isMandatory,
+          order: q.order,
+          responseValues: q.responseValues
+        })) : [],
+        questionCount: Array.isArray(survey.questions) ? survey.questions.length : 0,
+        isComplete: Array.isArray(survey.questions) && survey.questions.length > 0,
+        createdBy: survey.createdBy,
+        createdAt: survey.createdAt,
+        updatedAt: survey.updatedAt
+      }));
+    } catch (error) {
+      throw new CustomError('Error retrieving surveys', 400);
     }
-  
-    async addQuestionToSurvey(surveyId, questionId) {
-      const survey = await this.findById(surveyId);
+  }
+  async updateSurvey(id, data, userId) {
+    try {
+        console.log(`@!@!@!@! Update survey process started for survey ID: ${id}`);
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            console.log(`@!@!@!@! Invalid survey ID provided: ${id}`);
+            throw new CustomError('Invalid survey ID', 400);
+        }
+
+        // Fetch the survey before updating
+        const survey = await this.getSurveyById(id);
+        console.log(`@!@!@!@! Found survey before update: ${JSON.stringify(survey)}`);
+
+        // Check for duplicate title if a new title is provided
+        if (data.title && data.title !== survey.title) {
+            console.log(`@!@!@!@! Checking for duplicate title: ${data.title}`);
+            const existingSurvey = await this.repository.findOne({ 
+                title: data.title,
+                _id: { $ne: id }
+            });
+            if (existingSurvey) {
+                console.log(`@!@!@!@! Duplicate title found for title: ${data.title}`);
+                throw new CustomError('Survey with this title already exists', 400);
+            }
+        }
+
+        // Update survey with new data
+        console.log(`@!@!@!@! Updating survey with data: ${JSON.stringify(data)}`);
+        const updatedSurvey = await this.repository.updateById(id, {
+            ...data,
+            modifiedBy: userId,
+            modifiedAt: new Date()
+        });
+        console.log(`@!@!@!@! Survey updated successfully. Updated survey data: ${JSON.stringify(updatedSurvey)}`);
+        // Fetch and return the updated survey
+        const result = await this.getSurveyById(updatedSurvey._id);
+        console.log(`@!@!@!@! Retrieved updated survey: ${JSON.stringify(result)}`);
+        return result;
+    } catch (error) {
+        console.error(`@!@!@!@! Error in updateSurvey: ${error.message}`);
+        if (error instanceof CustomError) throw error;
+        throw new CustomError('Error updating survey', 500);
+    }
+}
+
+
+  async addQuestionToSurvey(surveyId, questionId) {
+    try {
+        console.log('@!@!@!@! This function is called')
+      if (!mongoose.Types.ObjectId.isValid(surveyId) || 
+          !mongoose.Types.ObjectId.isValid(questionId)) {
+        throw new CustomError('Invalid survey or question ID', 400);
+      }
+
+      const survey = await this.repository.findById(surveyId);
+      if (!survey) {
+        throw new CustomError('Survey not found', 404);
+      }
+
+      if (!survey.questions) survey.questions = [];
+      if (!survey.questionOrder) survey.questionOrder = [];
+      console.log('@!@!@!@! in survey service',survey.questions)
       if (!survey.questions.includes(questionId)) {
         survey.questions.push(questionId);
         survey.questionOrder.push(questionId);
-        await survey.save();
+        
+        await this.repository.updateById(surveyId, {
+          questions: survey.questions,
+          questionOrder: survey.questionOrder
+        });
       }
-      return survey;
+
+      return await this.getSurveyById(surveyId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error adding question to survey', 500);
     }
-  
-    async reorderQuestions(surveyId, questionOrder) {
-      const survey = await this.findById(surveyId);
-      const currentQuestions = new Set(survey.questions.map(q => q.toString()));
-      
-      if (!questionOrder.every(id => currentQuestions.has(id.toString()))) {
-        throw new CustomError('Invalid question order provided', 400);
+  }
+
+  async removeQuestionFromSurvey(surveyId, questionId) {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(surveyId) || 
+          !mongoose.Types.ObjectId.isValid(questionId)) {
+        throw new CustomError('Invalid survey or question ID', 400);
       }
-  
-      survey.questionOrder = questionOrder;
-      await this._questionService.repository.reorderQuestions(surveyId, questionOrder);
-      await survey.save();
-      return survey;
+
+      const survey = await this.getSurveyById(surveyId);
+
+      survey.questions = survey.questions.filter(
+        id => id.toString() !== questionId.toString()
+      );
+      survey.questionOrder = survey.questionOrder.filter(
+        id => id.toString() !== questionId.toString()
+      );
+
+      await this.repository.updateById(surveyId, {
+        questions: survey.questions,
+        questionOrder: survey.questionOrder
+      });
+
+      return await this.getSurveyById(surveyId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error removing question from survey', 500);
     }
-  
-    async archiveSurvey(id, userId) {
-      return await this.updateById(id, {
+  }
+
+  async archiveSurvey(id, userId) {
+    try {
+      const survey = await this.getSurveyById(id);
+
+      if (survey.isArchived) {
+        throw new CustomError('Survey is already archived', 400);
+      }
+
+      await this.repository.updateById(id, {
         isArchived: true,
         archivedAt: new Date(),
         modifiedBy: userId
       });
+
+      return await this.getSurveyById(id);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error archiving survey', 500);
     }
-  
-    async unarchiveSurvey(id, userId) {
-      return await this.updateById(id, {
+  }
+
+  async unarchiveSurvey(id, userId) {
+    try {
+      const survey = await this.getSurveyById(id);
+
+      if (!survey.isArchived) {
+        throw new CustomError('Survey is not archived', 400);
+      }
+
+      await this.repository.updateById(id, {
         isArchived: false,
         archivedAt: null,
         modifiedBy: userId
       });
+
+      return await this.getSurveyById(id);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error unarchiving survey', 500);
     }
-  
-    async duplicateSurvey(id, userId) {
+  }
+
+  async duplicateSurvey(id, userId) {
+    try {
       const originalSurvey = await this.getSurveyById(id);
-      const surveyData = {
+
+      const newSurvey = await this.createSurvey({
         title: `${originalSurvey.title} (Copy)`,
         description: originalSurvey.description,
         isTemplate: originalSurvey.isTemplate,
         createdBy: userId
-      };
-  
-      const newSurvey = await this.createSurvey(surveyData);
-  
-      for (const question of originalSurvey.questions) {
-        const newQuestion = await this._questionService.duplicateQuestion(
-          question._id,
-          newSurvey._id,
-          userId
-        );
-        await this.addQuestionToSurvey(newSurvey._id, newQuestion._id);
-      }
-  
-      return await this.getSurveyById(newSurvey._id);
-    }
+      });
 
-    async removeQuestionFromSurvey(surveyId, questionId) {
-        const survey = await this.findById(surveyId);
-        if (!survey) {
-          throw new CustomError('Survey not found', 404);
+      if (originalSurvey.questions && originalSurvey.questions.length > 0) {
+        for (const question of originalSurvey.questions) {
+          const newQuestion = await this._questionService.duplicateQuestion(
+            question._id,
+            newSurvey._id,
+            userId
+          );
+          await this.addQuestionToSurvey(newSurvey._id, newQuestion._id);
         }
-      
-        survey.questions = survey.questions.filter(id => id.toString() !== questionId.toString());
-        survey.questionOrder = survey.questionOrder.filter(id => id.toString() !== questionId.toString());
-        
-        await survey.save();
-        return survey;
       }
 
+      return await this.getSurveyById(newSurvey._id);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error duplicating survey', 500);
+    }
   }
-  
-  module.exports = SurveyService;
+
+  async reorderQuestions(surveyId, questionOrder) {
+    try {
+      const survey = await this.getSurveyById(surveyId);
+
+      const currentQuestions = new Set(survey.questions.map(q => q.toString()));
+      const validOrder = questionOrder.every(id => currentQuestions.has(id.toString()));
+      
+      if (!validOrder) {
+        throw new CustomError('Invalid question order provided', 400);
+      }
+
+      await this.repository.updateById(surveyId, {
+        questionOrder: questionOrder
+      });
+
+      if (this._questionService) {
+        await this._questionService.reorderSurveyQuestions(surveyId, questionOrder);
+      }
+
+      return await this.getSurveyById(surveyId);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error reordering questions', 500);
+    }
+  }
+
+  async deleteSurvey(id, userId) {
+    try {
+      const survey = await this.getSurveyById(id);
+
+      if (survey.questions && survey.questions.length > 0) {
+        for (const questionId of survey.questions) {
+          await this._questionService.deleteQuestion(questionId);
+        }
+      }
+
+      await this.deleteById(id);
+      return { success: true, message: 'Survey deleted successfully' };
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error deleting survey', 500);
+    }
+  }
+
+  async validateSurveyAccess(surveyId, userId, requiredRole = null) {
+    try {
+      const survey = await this.getSurveyById(surveyId);
+      
+      if (survey.createdBy.toString() !== userId.toString() && 
+          (requiredRole && requiredRole !== 'admin')) {
+        throw new CustomError('Not authorized to access this survey', 403);
+      }
+      
+      return survey;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error validating survey access', 500);
+    }
+  }
+
+  async getSurveyStats(surveyId) {
+    try {
+      const survey = await this.getSurveyById(surveyId);
+      
+      return {
+        totalQuestions: survey.questions.length,
+        questionTypes: survey.questions.reduce((acc, q) => {
+          acc[q.responseType] = (acc[q.responseType] || 0) + 1;
+          return acc;
+        }, {}),
+        mandatoryQuestions: survey.questions.filter(q => q.isMandatory).length,
+        isComplete: survey.questions.length > 0,
+        lastUpdated: survey.updatedAt,
+        createdAt: survey.createdAt
+      };
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error getting survey statistics', 500);
+    }
+  }
+}
+
+module.exports = SurveyService;
 
 File: service\surveyProgress.js
 ----------------------------------------
-// services/surveyProgress.js
 const BaseService = require('./baseService');
 const CustomError = require('../utils/customError');
+const mongoose = require('mongoose');
 
 class SurveyProgressService extends BaseService {
   constructor(surveyProgressRepository, surveyService, questionService) {
@@ -2076,181 +2769,254 @@ class SurveyProgressService extends BaseService {
     this.questionService = questionService;
   }
 
-  async initializeProgress(surveyId, respondentId) {
-    // Verify survey exists
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
+  async findBySurveyAndRespondent(surveyId, respondentId) {
+    try {
+      return await this.repository.findOne({
+        surveyId,
+        respondentId
+      });
+    } catch (error) {
+      throw new CustomError('Error in finding survey progress', 500);
     }
+  }
 
-    // Check for existing progress
-    let progress = await this.repository.findBySurveyAndRespondent(
-      surveyId,
-      respondentId
-    );
+  async initializeProgress(surveyId, respondentId) {
+    try {
 
-    if (!progress) {
-      progress = await this.create({
+      const existingProgress = await this.findBySurveyAndRespondent(surveyId, respondentId);
+      if (existingProgress) {
+        return existingProgress;
+      }
+
+      const survey = await this.surveyService.getSurveyById(surveyId);
+      if (!survey) {
+        throw new CustomError('Survey is not found', 404);
+      }
+
+      const progress = await this.repository.create({
         surveyId,
         respondentId,
         status: 'NOT_STARTED',
+        answeredQuestions: [],
         progress: 0,
-        answeredQuestions: []
+        startedAt: null,
+        completedAt: null,
+        lastAnsweredAt: new Date()
       });
-    }
 
-    return progress;
+      return progress;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error initializing survey progress', 500);
+    }
   }
 
   async updateProgress(surveyId, respondentId, questionId) {
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
-    }
-
-    const question = await this.questionService.findById(questionId);
-    if (!question || question.surveyId.toString() !== surveyId) {
-      throw new CustomError('Question not found in this survey', 404);
-    }
-
-    const progress = await this.repository.findBySurveyAndRespondent(
-      surveyId,
-      respondentId
-    );
-
-    if (!progress) {
-      throw new CustomError('Survey progress not found for this survey', 404);
-    }
-
-    if (progress.status === 'NOT_STARTED') {
-      progress.status = 'IN_PROGRESS';
-    }
-
-    if (!progress.answeredQuestions.includes(questionId)) {
-      progress.answeredQuestions.push(questionId);
-    }
-
-    progress.progress = (progress.answeredQuestions.length / survey.questions.length) * 100;
-
-    if (progress.progress === 100) {
-      progress.status = 'COMPLETED';
-    }
-
-    await progress.save();
-    return progress;
-  }
-
-  async updateBulkProgress(surveyId, respondentId, questionIds) {
-    if (!Array.isArray(questionIds)) {
-        throw new CustomError('questionIds must be an array', 400);
-    }
-
-    if (questionIds.length === 0) {
-        throw new CustomError('questionIds array cannot be empty', 400);
-    }
-
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-        throw new CustomError('Survey not found', 404);
-    }
-
-    const surveyQuestionIds = survey.questions.map(q => q.toString());
-    const invalidQuestions = questionIds.filter(qId => !surveyQuestionIds.includes(qId.toString()));
-    if (invalidQuestions.length > 0) {
-        throw new CustomError(
-            `Questions with IDs: ${invalidQuestions.join(', ')} do not belong to this survey`,
-            400
-        );
-    }
-
-    const progress = await this.repository.findBySurveyAndRespondent(surveyId, respondentId);
-    if (!progress) {
-        throw new CustomError(
-            `No survey progress found for user ${respondentId} on survey ${surveyId}`,
-            404
-        );
-    }
-
     try {
-        if (progress.status === 'NOT_STARTED') {
-            progress.status = 'IN_PROGRESS';
-        }
 
-        const uniqueQuestionIds = new Set([
-            ...progress.answeredQuestions.map(q => q.toString()),
-            ...questionIds.map(q => q.toString())
-        ]);
-        progress.answeredQuestions = Array.from(uniqueQuestionIds);
+      let progress = await this.findBySurveyAndRespondent(surveyId, respondentId);
+      if (!progress) {
+        progress = await this.initializeProgress(surveyId, respondentId);
+      }
 
-        progress.progress = Math.min(
-            (progress.answeredQuestions.length / survey.questions.length) * 100,
-            100
-        );
+      const survey = await this.surveyService.getSurveyById(surveyId);
+      const totalQuestions = survey.questions.length;
 
-        if (progress.progress === 100) {
-            progress.status = 'COMPLETED';
-            progress.completedAt = new Date();
-        }
+      if (progress.status === 'NOT_STARTED') {
+        progress.status = 'IN_PROGRESS';
+        progress.startedAt = new Date();
+      }
 
-        progress.lastAnsweredAt = new Date();
+      const questionIdStr = questionId.toString();
+      if (!progress.answeredQuestions.map(q => q.toString()).includes(questionIdStr)) {
+        progress.answeredQuestions.push(questionId);
+      }
 
-        await progress.save();
-        return progress;
+      progress.progress = Math.round((progress.answeredQuestions.length / totalQuestions) * 100);
+
+      if (progress.progress === 100) {
+        progress.status = 'COMPLETED';
+        progress.completedAt = new Date();
+      }
+
+      progress.lastAnsweredAt = new Date();
+
+      const updatedProgress = await this.repository.updateById(progress.id, {
+        status: progress.status,
+        answeredQuestions: progress.answeredQuestions,
+        progress: progress.progress,
+        startedAt: progress.startedAt,
+        completedAt: progress.completedAt,
+        lastAnsweredAt: progress.lastAnsweredAt
+      });
+
+      return updatedProgress;
     } catch (error) {
-        throw new CustomError(
-            `Failed to update progress: ${error.message}`,
-            500
-        );
+            if (error instanceof CustomError) throw error;
+      throw new CustomError('Error updating survey progress', 500);
     }
-}
-  
+  }
 
   async getProgress(surveyId, respondentId) {
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
+    try {
+      const survey = await this.surveyService.getSurveyById(surveyId);
+      if (!survey) {
+        throw new CustomError('Survey not found', 404);
+      }
+
+      const progress = await this.findBySurveyAndRespondent(surveyId, respondentId);
+      if (!progress) {
+        throw new CustomError('Survey progress not found', 404);
+      }
+
+      return progress;
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error retrieving survey progress', 500);
     }
-
-    const progress = await this.repository.findBySurveyAndRespondent(
-      surveyId,
-      respondentId
-    );
-
-    if (!progress) {
-      throw new CustomError('Survey progress not found', 404);
-    }
-
-    return progress;
   }
 
-  async getSurveyParticipants(surveyId, requesterId) {
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
-    }
+  async getSurveyParticipants(surveyId, queryParams) {
+    try {
+      const filters = {
+        status: queryParams.status,
 
-    if (survey.createdBy.toString() !== requesterId && requesterId.role !== 'admin') {
-      throw new CustomError('Not authorized to view participants', 403);
-    }
+        minProgress: queryParams.minProgress,
 
-    return await this.repository.findBySurveyWithRespondents(surveyId);
+        startDate: queryParams.startDate,
+        endDate: queryParams.endDate,
+
+
+        sortBy: queryParams.sortBy || '-updatedAt'
+      };
+
+      const participants = await this.repository.getSurveyParticipants(
+        surveyId, 
+        filters
+      );
+
+      return participants;
+    } catch (error) {
+      throw new CustomError('Error fetching survey participants', 500);
+    }
   }
 
-  async getCompletionStats(surveyId, requesterId) {
-    const survey = await this.surveyService.findById(surveyId);
-    if (!survey) {
-      throw new CustomError('Survey not found', 404);
-    }
 
-    if (survey.createdBy.toString() !== requesterId && requesterId.role !== 'admin') {
-      throw new CustomError('Not authorized to view statistics', 403);
-    }
+  async getCompletionStats(surveyId) {
+    try {
+      const survey = await this.surveyService.getSurveyById(surveyId);
+      if (!survey) {
+        throw new CustomError('Survey not found', 404);
+      }
 
-    return await this.repository.getCompletionStats(surveyId);
+      const stats = await this.repository.getCompletionStats(surveyId);
+      return {
+        totalParticipants: stats.reduce((acc, stat) => acc + stat.count, 0),
+        statusBreakdown: stats.reduce((acc, stat) => {
+          acc[stat._id] = {
+            count: stat.count,
+            percentage: stat.avgProgress
+          };
+          return acc;
+        }, {}),
+        averageCompletion: stats.reduce((acc, stat) => acc + stat.avgProgress, 0) / stats.length
+      };
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error getting completion statistics', 500);
+    }
   }
 
-  async getRespondentProgress(respondentId) {
-    return await this.repository.getRespondentProgress(respondentId);
+  async getMyProgress(respondentId) {
+    try {
+      const progress = await this.repository.findAll({ respondentId });
+      return progress.map(p => ({
+        surveyId: p.surveyId,
+        status: p.status,
+        progress: p.progress,
+        startedAt: p.startedAt,
+        lastAnsweredAt: p.lastAnsweredAt,
+        completedAt: p.completedAt
+      }));
+    } catch (error) {
+      throw new CustomError('Error retrieving your survey progress', 500);
+    }
+  }
+
+  // doubt in this service
+
+  // async resetProgress(surveyId, respondentId) {
+  //   try {
+  //     const progress = await this.findBySurveyAndRespondent(surveyId, respondentId);
+  //     if (!progress) {
+  //       throw new CustomError('Survey progress not found', 404);
+  //     }
+
+  //     const resetData = {
+  //       status: 'NOT_STARTED',
+  //       answeredQuestions: [],
+  //       progress: 0,
+  //       startedAt: null,
+  //       completedAt: null,
+  //       lastAnsweredAt: new Date()
+  //     };
+
+  //     return await this.repository.updateById(progress.id, resetData);
+  //   } catch (error) {
+  //     if (error instanceof CustomError) throw error;
+  //     throw new CustomError('Error resetting survey progress', 500);
+  //   }
+  // }
+
+  async bulkUpdateProgress(surveyId, respondentId, questionIds) {
+    try {
+      let progress = await this.findBySurveyAndRespondent(surveyId, respondentId);
+      if (!progress) {
+        progress = await this.initializeProgress(surveyId, respondentId);
+      }
+
+      const survey = await this.surveyService.getSurveyById(surveyId);
+      const totalQuestions = survey.questions.length;
+
+      const uniqueQuestions = new Set([
+        ...progress.answeredQuestions.map(q => q.toString()),
+        ...questionIds.map(q => q.toString())
+      ]);
+      progress.answeredQuestions = Array.from(uniqueQuestions);
+
+      if (progress.status === 'NOT_STARTED') {
+        progress.status = 'IN_PROGRESS';
+        progress.startedAt = new Date();
+      }
+
+      progress.progress = Math.round((progress.answeredQuestions.length / totalQuestions) * 100);
+      progress.lastAnsweredAt = new Date();
+
+      if (progress.progress === 100) {
+        progress.status = 'COMPLETED';
+        progress.completedAt = new Date();
+      }
+
+      return await this.repository.updateById(progress.id, progress);
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error updating survey progress', 500);
+    }
+  }
+
+  async deleteProgress(surveyId, respondentId) {
+    try {
+      const progress = await this.findBySurveyAndRespondent(surveyId, respondentId);
+      if (!progress) {
+        throw new CustomError('Survey progress not found', 404);
+      }
+
+      await this.repository.deleteById(progress.id);
+      return { message: 'Survey progress deleted successfully' };
+    } catch (error) {
+      if (error instanceof CustomError) throw error;
+      throw new CustomError('Error deleting survey progress', 500);
+    }
   }
 }
 
@@ -2265,39 +3031,77 @@ const keys = require('../config/keys');
 const CustomError = require('../utils/customError');
 
 class UserService extends BaseService {
-  constructor(repository) {
-    super(repository);
+  constructor(userRepository) {
+    super(userRepository);
   }
 
   async registerUser(userData) {
-    const { username, password } = userData;
-    let user = await this.repository.findByUsername(username);
-    if (user) {
-      throw new CustomError(`User with username ${username} already exists`, 400);
+    const { username, email, password } = userData;
+
+    let existingUser = await this.repository.findByEmail(email);
+    if (existingUser) {
+      throw new CustomError('User with this email already exists', 400);
     }
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = await this.repository.create({
+
+    existingUser = await this.repository.findByUsername(username);
+    if (existingUser) {
+      throw new CustomError('Username is already taken', 400);
+    }
+
+    const user = await this.repository.create({
       username,
-      password: hashedPassword,
+      email,
+      password
     });
-    const token = jwt.sign({ id: newUser._id }, keys.jwtSecret, {
-      expiresIn: '1d',
-    });
-    return { user: { id: newUser._id, username: newUser.username }, token };
+
+    const token = jwt.sign(
+      { id: user._id },
+      keys.jwtSecret,
+      { expiresIn: '1d' }
+    );
+
+    return {
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      },
+      token
+    };
   }
 
   async loginUser(userData) {
-    const { username, password } = userData;
-    let user = await this.repository.findByUsername(username);
+    const { email, password } = userData;
+
+    const user = await this.repository.findByEmail(email);
     if (!user) {
-      throw new CustomError('Invalid user details', 400);
+      throw new CustomError('Invalid credentials', 401);
     }
-    const isMatch = await bcrypt.compare(password, user.password);
+
+    const isMatch = await user.matchPassword(password);
     if (!isMatch) {
-      throw new CustomError('Wrong password', 400);
+      throw new CustomError('Invalid credentials', 401);
     }
-    const token = jwt.sign({ id: user._id }, keys.jwtSecret, { expiresIn: '1d' });
-    return { user: { id: user._id, username: user.username }, token };
+
+    user.lastLogin = new Date();
+    await user.save({ validateBeforeSave: false }); 
+
+    const token = jwt.sign(
+      { id: user._id },
+      keys.jwtSecret,
+      { expiresIn: '1d' }
+    );
+
+    return {
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      },
+      token
+    };
   }
 
   async getUserById(userId) {
@@ -2305,23 +3109,298 @@ class UserService extends BaseService {
     if (!user) {
       throw new CustomError('User not found', 404);
     }
-    return user;
+
+    return {
+      id: user._id,
+      username: user.username,
+      email: user.email,
+      role: user.role
+    };
   }
 }
 
 module.exports = UserService;
 
+File: tests\survey.test.js
+----------------------------------------
+// Load environment variables from config/.env file
+require('dotenv').config({ path: 'config/.env' });
+const mongoose = require('mongoose');
+const Survey = require('../models/survey');
+const { surveyController } = require('../bootstrap');
+
+describe('Survey Model', () => {
+  beforeAll(async () => {
+    const url = process.env.MONGO_URI_TESTING; // Use a different database for testing
+    console.log('Connecting to MongoDB:', url);
+    await mongoose.connect(url);
+  });
+
+  afterAll(async () => {
+    await mongoose.connection.close();
+  });
+
+  // Test Case for Create Survey
+  it('should create a new Survey', async () => {
+    const timestamp = Date.now();
+
+    const req = {
+      body: {
+        title: `Sample Survey ${new Date().getTime()}`,
+        description: 'This is a sample survey',
+        createdBy: new mongoose.Types.ObjectId(),
+        isTemplate: false,
+        questions: [],
+        questionOrder: []
+      }
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+
+    await surveyController.createSurvey(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+
+    const createdSurvey = res.json.mock.calls[0][0];
+    expect(createdSurvey.data.title).toBe(req.body.title);
+    expect(createdSurvey.data.description).toBe(req.body.description);
+    expect(createdSurvey.data.createdBy).toEqual(req.body.createdBy);
+    expect(createdSurvey.data.isTemplate).toBe(req.body.isTemplate);
+    expect(Array.isArray(createdSurvey.data.questions)).toBe(true);
+    expect(Array.isArray(createdSurvey.data.questionOrder)).toBe(true);
+
+    const surveyInDb = await Survey.findById(createdSurvey.data._id);
+    expect(surveyInDb).toBeDefined();
+    expect(surveyInDb.title).toBe(req.body.title);
+    expect(surveyInDb.description).toBe(req.body.description);
+    expect(surveyInDb.createdBy).toEqual(req.body.createdBy);
+    expect(surveyInDb.isTemplate).toBe(req.body.isTemplate);
+    expect(Array.isArray(surveyInDb.questions)).toBe(true);
+    expect(Array.isArray(surveyInDb.questionOrder)).toBe(true);
+  });
+
+  // Test Case for Get All Surveys
+  it('should get all surveys', async () => {
+    const existingSurveys = await Survey.find({});
+
+    const req = {
+      query: { includeArchived: 'false' }
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+
+    await surveyController.getAllSurveys(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+
+    const foundSurveys = res.json.mock.calls[0][0];
+    expect(foundSurveys.data.length).toBe(existingSurveys.length);
+
+    // Validate each survey found in the response
+    existingSurveys.forEach(existingSurvey => {
+      const foundSurvey = foundSurveys.data.find(survey => 
+        survey._id.toString() === existingSurvey._id.toString()
+      );
+      expect(foundSurvey).toBeDefined();
+      expect(foundSurvey.title).toBe(existingSurvey.title);
+      expect(foundSurvey.description).toBe(existingSurvey.description);
+      expect(foundSurvey.createdBy).toEqual(existingSurvey.createdBy);
+      expect(foundSurvey.isTemplate).toBe(existingSurvey.isTemplate);
+      expect(Array.isArray(foundSurvey.questions)).toBe(true);
+      expect(Array.isArray(foundSurvey.questionOrder)).toBe(true);
+    });
+  });
+
+  // Test Case for Get Survey By ID
+  it('should get a survey by id', async () => {
+    const existingSurvey = await Survey.findOne();
+
+    const req = {
+      params: { id: existingSurvey._id }
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+
+    await surveyController.getById(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+
+    const foundSurvey = res.json.mock.calls[0][0];
+    expect(foundSurvey).toBeDefined();
+    expect(foundSurvey.data.title).toBe(existingSurvey.title);
+    expect(foundSurvey.data.description).toBe(existingSurvey.description);
+    expect(foundSurvey.data.createdBy).toEqual(existingSurvey.createdBy);
+    expect(foundSurvey.data.isTemplate).toBe(existingSurvey.isTemplate);
+    expect(Array.isArray(foundSurvey.data.questions)).toBe(true);
+    expect(Array.isArray(foundSurvey.data.questionOrder)).toBe(true);
+  });
+
+  // Test Case for Update Survey By ID
+  it('should update a survey by id', async () => {
+    const existingSurvey = await Survey.findOne();
+    const timestamp = Date.now();
+
+    const updatedSurveyData = {
+      title: `Updated Survey ${new Date().getTime()}`,
+      description: 'Updated sample description',
+      isTemplate: true,
+      isArchived: false
+    };
+
+    const req = {
+      params: { id: existingSurvey._id },
+      body: updatedSurveyData,
+      user: { id: existingSurvey.createdBy }
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+
+    await surveyController.update(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+
+    const updatedSurvey = res.json.mock.calls[0][0];
+    expect(updatedSurvey.data.title).toBe(updatedSurveyData.title);
+    expect(updatedSurvey.data.description).toBe(updatedSurveyData.description);
+    expect(updatedSurvey.data.isTemplate).toBe(updatedSurveyData.isTemplate);
+    expect(updatedSurvey.data.isArchived).toBe(updatedSurveyData.isArchived);
+
+    // Fetch the survey from the database after update
+    const fetchedSurvey = await Survey.findById(existingSurvey._id);
+    expect(fetchedSurvey.title).toBe(updatedSurveyData.title);
+    expect(fetchedSurvey.description).toBe(updatedSurveyData.description);
+    expect(fetchedSurvey.isTemplate).toBe(updatedSurveyData.isTemplate);
+    expect(fetchedSurvey.isArchived).toBe(updatedSurveyData.isArchived);
+  });
+
+  // Test Case for Delete Survey By ID
+  it('should delete a survey by id', async () => {
+    const existingSurvey = await Survey.findOne();
+
+    const req = {
+      params: { id: existingSurvey._id },
+      user: { id: existingSurvey.createdBy }
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+
+    await surveyController.delete(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+
+    // Verify that the survey is deleted from the database
+    const surveyInDb = await Survey.findById(existingSurvey._id);
+    expect(surveyInDb).toBeNull();
+  });
+
+  // Test Case for Archive Survey
+  it('should archive a survey', async () => {
+    const existingSurvey = await Survey.findOne();
+
+    const req = {
+      params: { id: existingSurvey._id },
+      user: { id: existingSurvey.createdBy }
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+
+    await surveyController.archiveSurvey(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+
+    const archivedSurvey = res.json.mock.calls[0][0];
+    expect(archivedSurvey.data.isArchived).toBe(true);
+    expect(archivedSurvey.data.archivedAt).toBeDefined();
+
+    // Verify archive status in database
+    const surveyInDb = await Survey.findById(existingSurvey._id);
+    expect(surveyInDb.isArchived).toBe(true);
+    expect(surveyInDb.archivedAt).toBeDefined();
+  });
+
+  // Test Case for Duplicate Survey
+  it('should duplicate a survey', async () => {
+    const existingSurvey = await Survey.findOne();
+
+    const req = {
+      params: { id: existingSurvey._id },
+      user: { id: existingSurvey.createdBy }
+    };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn()
+    };
+
+    await surveyController.duplicateSurvey(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(201);
+
+    const duplicatedSurvey = res.json.mock.calls[0][0];
+    expect(duplicatedSurvey.data.title).toBe(`${existingSurvey.title} (Copy)`);
+    expect(duplicatedSurvey.data.description).toBe(existingSurvey.description);
+    expect(duplicatedSurvey.data.isTemplate).toBe(existingSurvey.isTemplate);
+    expect(duplicatedSurvey.data.questions.length).toBe(existingSurvey.questions.length);
+
+    // Verify duplicate exists in database
+    const duplicateInDb = await Survey.findById(duplicatedSurvey.data._id);
+    expect(duplicateInDb).toBeDefined();
+    expect(duplicateInDb.title).toBe(`${existingSurvey.title} (Copy)`);
+    expect(duplicateInDb.questions.length).toBe(existingSurvey.questions.length);
+  });
+
+  // Test Case for Reorder Questions
+  it('should reorder questions in a survey', async () => {
+    const existingSurvey = await Survey.findOne({ 'questions.0': { $exists: true } });
+    
+    if (existingSurvey && existingSurvey.questions.length >= 2) {
+      const newQuestionOrder = [...existingSurvey.questionOrder].reverse();
+
+      const req = {
+        params: { id: existingSurvey._id },
+        body: { questionOrder: newQuestionOrder },
+        user: { id: existingSurvey.createdBy }
+      };
+      const res = {
+        status: jest.fn().mockReturnThis(),
+        json: jest.fn()
+      };
+
+      await surveyController.reorderQuestions(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+
+      const updatedSurvey = res.json.mock.calls[0][0];
+      expect(updatedSurvey.data.questionOrder).toEqual(newQuestionOrder);
+
+      const surveyInDb = await Survey.findById(existingSurvey._id);
+      expect(surveyInDb.questionOrder.map(id => id.toString()))
+        .toEqual(newQuestionOrder.map(id => id.toString()));
+    }
+  });
+});
 
 File: utils\customError.js
 ----------------------------------------
 class CustomError extends Error {
   constructor(message, statusCode) {
-    super(message);
-    this.statusCode = statusCode;
-    this.status = `${statusCode}`.startsWith('4') ? 'fail' : 'error';
-    this.isOperational = true;
+      super(message);
+      this.statusCode = statusCode;
+      this.status = `${statusCode}`.startsWith('4') ? 'fail' : 'error';
+      this.isOperational = true;
 
-    Error.captureStackTrace(this, this.constructor);
+      Error.captureStackTrace(this, this.constructor);
   }
 }
 

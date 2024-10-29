@@ -116,23 +116,31 @@ class SurveyProgressService extends BaseService {
     }
   }
 
-  async getSurveyParticipants(surveyId, requesterId) {
+  async getSurveyParticipants(surveyId, queryParams) {
     try {
-      const survey = await this.surveyService.getSurveyById(surveyId);
-      if (!survey) {
-        throw new CustomError('Survey not found', 404);
-      }
+      const filters = {
+        status: queryParams.status,
 
-      if (survey.createdBy.toString() !== requesterId && requesterId.role !== 'admin') {
-        throw new CustomError('Not authorized to view participants', 403);
-      }
+        minProgress: queryParams.minProgress,
 
-      return await this.repository.findBySurveyWithRespondents(surveyId);
+        startDate: queryParams.startDate,
+        endDate: queryParams.endDate,
+
+
+        sortBy: queryParams.sortBy || '-updatedAt'
+      };
+
+      const participants = await this.repository.getSurveyParticipants(
+        surveyId, 
+        filters
+      );
+
+      return participants;
     } catch (error) {
-      if (error instanceof CustomError) throw error;
-      throw new CustomError('Error retrieving survey participants', 500);
+      throw new CustomError('Error fetching survey participants', 500);
     }
   }
+
 
   async getCompletionStats(surveyId) {
     try {

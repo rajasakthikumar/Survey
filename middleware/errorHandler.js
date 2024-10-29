@@ -4,19 +4,17 @@ const errorHandler = (err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
 
-  console.error(err);
-
-  if (err.name === 'CastError') {
-    error = new CustomError('Resource not found', 404);
-  }
-
-  if (err.code === 11000) {
-    error = new CustomError('Duplicate field value entered', 400);
+  if (process.env.NODE_ENV === 'test') {
+    console.error('Error details:', error);
   }
 
   if (err.name === 'ValidationError') {
     const message = Object.values(err.errors).map(val => val.message).join(', ');
     error = new CustomError(message, 400);
+  }
+
+  if (err.code === 11000) {
+    error = new CustomError('Survey with this title already exists', 400);
   }
 
   res.status(error.statusCode || 500).json({

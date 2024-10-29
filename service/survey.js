@@ -14,14 +14,18 @@ class SurveyService extends BaseService {
 
   async createSurvey(data) {
     try {
+      if (!data.title) {
+        throw new CustomError('Title is required', 400); 
+      }
+  
       const existingSurvey = await this.repository.findOne({ 
         title: data.title 
       });
-      
+  
       if (existingSurvey) {
         throw new CustomError('Survey with this title already exists', 400);
       }
-
+  
       const survey = await this.create({
         ...data,
         questions: [],
@@ -29,13 +33,14 @@ class SurveyService extends BaseService {
         isArchived: false,
         archivedAt: null
       });
-
+  
       return await this.getSurveyById(survey.id);
     } catch (error) {
       if (error instanceof CustomError) throw error;
-      throw new CustomError('Error creating survey', 500);
+      throw new CustomError('Error creating survey', 500); // Changed status to 500 for internal errors
     }
   }
+  
 
   async getSurveyById(id) {
     try {
@@ -50,7 +55,7 @@ class SurveyService extends BaseService {
       return survey;
     } catch (error) {
       if (error instanceof CustomError) throw error;
-      throw new CustomError('Error retrieving survey', 500);
+      throw new CustomError('Error retrieving survey', 400);
     }
   }
 
@@ -82,39 +87,54 @@ class SurveyService extends BaseService {
         updatedAt: survey.updatedAt
       }));
     } catch (error) {
-      throw new CustomError('Error retrieving surveys', 500);
+      throw new CustomError('Error retrieving surveys', 400);
     }
   }
   async updateSurvey(id, data, userId) {
     try {
-      if (!mongoose.Types.ObjectId.isValid(id)) {
-        throw new CustomError('Invalid survey ID', 400);
-      }
+        console.log(`@!@!@!@! Update survey process started for survey ID: ${id}`);
 
-      const survey = await this.getSurveyById(id);
-
-      if (data.title && data.title !== survey.title) {
-        const existingSurvey = await this.repository.findOne({ 
-          title: data.title,
-          _id: { $ne: id }
-        });
-        if (existingSurvey) {
-          throw new CustomError('Survey with this title already exists', 400);
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            console.log(`@!@!@!@! Invalid survey ID provided: ${id}`);
+            throw new CustomError('Invalid survey ID', 400);
         }
-      }
 
-      const updatedSurvey = await this.repository.updateById(id, {
-        ...data,
-        modifiedBy: userId,
-        modifiedAt: new Date()
-      });
+        // Fetch the survey before updating
+        const survey = await this.getSurveyById(id);
+        console.log(`@!@!@!@! Found survey before update: ${JSON.stringify(survey)}`);
 
-      return await this.getSurveyById(updatedSurvey.id);
+        // Check for duplicate title if a new title is provided
+        if (data.title && data.title !== survey.title) {
+            console.log(`@!@!@!@! Checking for duplicate title: ${data.title}`);
+            const existingSurvey = await this.repository.findOne({ 
+                title: data.title,
+                _id: { $ne: id }
+            });
+            if (existingSurvey) {
+                console.log(`@!@!@!@! Duplicate title found for title: ${data.title}`);
+                throw new CustomError('Survey with this title already exists', 400);
+            }
+        }
+
+        // Update survey with new data
+        console.log(`@!@!@!@! Updating survey with data: ${JSON.stringify(data)}`);
+        const updatedSurvey = await this.repository.updateById(id, {
+            ...data,
+            modifiedBy: userId,
+            modifiedAt: new Date()
+        });
+        console.log(`@!@!@!@! Survey updated successfully. Updated survey data: ${JSON.stringify(updatedSurvey)}`);
+        // Fetch and return the updated survey
+        const result = await this.getSurveyById(updatedSurvey._id);
+        console.log(`@!@!@!@! Retrieved updated survey: ${JSON.stringify(result)}`);
+        return result;
     } catch (error) {
-      if (error instanceof CustomError) throw error;
-      throw new CustomError('Error updating survey', 500);
+        console.error(`@!@!@!@! Error in updateSurvey: ${error.message}`);
+        if (error instanceof CustomError) throw error;
+        throw new CustomError('Error updating survey', 500);
     }
-  }
+}
+
 
   async addQuestionToSurvey(surveyId, questionId) {
     try {

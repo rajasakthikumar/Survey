@@ -85,7 +85,24 @@ class SurveyProgressRepository extends BaseRepository {
   }
 
   async getSurveyParticipants(surveyId, filters = {}) {
-    const query = { surveyId, ...filters };
+
+    
+    const query = { surveyId };
+
+    if (filters.status) {
+      query.status = filters.status;  
+    }
+
+    if (filters.minProgress) {
+      query.progress = { $gte: Number(filters.minProgress) };
+    }
+
+    if (filters.startDate && filters.endDate) {
+      query.startedAt = {
+        $gte: new Date(filters.startDate),
+        $lte: new Date(filters.endDate)
+      };
+    }
     
     return await this.model
       .find(query)
@@ -94,11 +111,10 @@ class SurveyProgressRepository extends BaseRepository {
       .sort('-updatedAt');
   }
 
-  async getRespondentProgress(respondentId, filters = {}) {
-    const query = { respondentId, ...filters };
+  async getRespondentProgress(respondentId) {
 
     return await this.model
-      .find(query)
+      .find(respondentId)
       .populate('surveyId', 'title description')
       .sort('-updatedAt');
   }
