@@ -18,7 +18,7 @@ class SurveyRepository extends BaseRepository {
         path: 'createdBy',
         select: 'username email'
       })
-      .lean(); // Convert to plain JavaScript object
+      .lean(); 
 
     return survey;
   }
@@ -63,14 +63,14 @@ class SurveyRepository extends BaseRepository {
         select: 'questionText responseType isMandatory order responseValues',
         options: { sort: { order: 1 } }
       })
-      .lean(); // Convert to plain JavaScript object
+      .lean(); 
 
     return survey;
   }
 
   async create(data) {
     const survey = await this.model.create(data);
-    return survey.toObject(); // Convert to plain JavaScript object
+    return survey.toObject(); 
   }
 }
 

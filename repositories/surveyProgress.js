@@ -41,7 +41,13 @@ class SurveyProgressRepository extends BaseRepository {
     if (progress.status === 'NOT_STARTED') {
       progress.status = 'IN_PROGRESS';
     }
-
+    //to check if all the questions have been answered in the survey
+    if(progress.answeredQuestions.length === survey.questions.length) {
+      progress.status = 'COMPLETED';
+      progress.completedAt = new Date();  
+    }
+//to compute the current progress of the survey
+    progress.progress = (progress.answeredQuestions.length / survey.questions.length) * 100;
     return await progress.save();
   }
 
